@@ -1,0 +1,20 @@
+# 依赖
+node_modules/
+
+# 编辑器 / 系统
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Herdr 生成物：gpui-kit.d.ts 由 gpui-shell 生成，文件头明确要求加进 .gitignore。
+# 每个 mod 目录各有一份，App 版本变化时会自动重写。
+mod/gpui-kit.d.ts
+mod/tabs/gpui-kit.d.ts
+
+# 临时文件（写入时可能残留）
+*.tmp
+.todos.json.*.tmp
+
+# 本地验证产物（截图、临时账本）
+/*.png

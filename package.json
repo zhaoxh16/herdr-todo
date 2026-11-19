@@ -1,0 +1,20 @@
+{
+  "name": "herdr-todo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Work items linked to Herdr spaces: timeline, status, priority",
+  "bin": {
+    "herdr-todo": "bin/herdr-todo"
+  },
+  "exports": {
+    ".": "./src/core.js"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "sync-core": "sh scripts/sync-core.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
