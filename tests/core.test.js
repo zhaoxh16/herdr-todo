@@ -375,3 +375,193 @@ test("unarchiveItem 让事项回到未处理，并解释状态为何变回 todo"
   assert.equal(it.timeline.at(-1).kind, "unarchived");
   assert.equal(summary(s.items).pending, 1);
 });
+
+// ---------- agent 关联（agent 替代 space） ----------
+
+test("setAgent 挂上 agent 时清空 space 关联，并记一条 agent 时间线", async () => {
+  const { setAgent } = await import("../src/core.js");
+  const { state, id } = seeded();
+  assert.deepEqual(state.items[0].spaces, ["spA"], "前提：事项原本关联 spA");
+
+  const next = setAgent(state, id, { address: "dev5/t2", space: "spA" }, { by: "panel" }, T0 + 1);
+  const it = next.items[0];
+  assert.deepEqual(it.agent, { address: "dev5/t2", space: "spA" });
+  assert.deepEqual(it.spaces, [], "挂上 agent 就要清掉 space，两种关联不能同时存在");
+  const last = it.timeline[it.timeline.length - 1];
+  assert.equal(last.kind, "agent");
+  assert.equal(last.from, null);
+  assert.equal(last.to, "dev5/t2");
+  assert.equal(last.by, "panel");
+});
+
+test("setAgent(null) 解除关联，但不会把 space 关联凭空恢复", async () => {
+  const { setAgent } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x" }, T0);
+  const id = s.items[0].id;
+  s = setAgent(s, id, { address: "dev5/t2", space: "spA" }, {}, T0 + 1);
+  s = setAgent(s, id, null, {}, T0 + 2);
+  assert.equal(s.items[0].agent, undefined, "解除后不该留着空对象");
+  assert.deepEqual(s.items[0].spaces, []);
+});
+
+test("挂 space 关联会解除 agent 关联（反向互斥）", async () => {
+  const { setAgent } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x" }, T0);
+  const id = s.items[0].id;
+  s = setAgent(s, id, { address: "dev5/t2", space: "spA" }, {}, T0 + 1);
+  s = setSpaces(s, id, ["spB"], {}, T0 + 2);
+  assert.deepEqual(s.items[0].spaces, ["spB"]);
+  assert.equal(s.items[0].agent, undefined, "挂了 space 就不能再留着 agent 关联");
+  const kinds = s.items[0].timeline.map((e) => e.kind);
+  assert.ok(kinds.includes("agent") && kinds.includes("spaces"));
+});
+
+test("清空 space 关联不会顺手解除 agent（那是两件不同的事）", async () => {
+  const { setAgent } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x" }, T0);
+  const id = s.items[0].id;
+  s = setAgent(s, id, { address: "dev5/t2", space: "spA" }, {}, T0 + 1);
+  s = setSpaces(s, id, [], {}, T0 + 2);
+  assert.deepEqual(s.items[0].agent, { address: "dev5/t2", space: "spA" });
+});
+
+test("同一个 agent 重复挂不产生新时间线（幂等）", async () => {
+  const { setAgent } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x" }, T0);
+  const id = s.items[0].id;
+  s = setAgent(s, id, { address: "dev5/t2", space: "spA" }, {}, T0 + 1);
+  const before = s.items[0].timeline.length;
+  s = setAgent(s, id, { address: "dev5/t2", space: "spA" }, {}, T0 + 2);
+  assert.equal(s.items[0].timeline.length, before, "同样的关联不该再记一条");
+});
+
+test("同一个 agent 换了 space：回退位置更新（那是真实变化）", async () => {
+  // 回退显示的位置在「关联当时」固定，是为了不让事项随 agent 搬家在 space 之间
+  // 跳；但用户重新把它挂到同一个 agent 上时，那个「当时」就变成了现在，
+  // 新的 space 才是对的。
+  const { setAgent } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x" }, T0);
+  const id = s.items[0].id;
+  s = setAgent(s, id, { address: "dev5/t2", space: "spA" }, {}, T0 + 1);
+  s = setAgent(s, id, { address: "dev5/t2", space: "spB" }, {}, T0 + 2);
+  assert.equal(s.items[0].agent.space, "spB");
+  assert.equal(s.items[0].timeline.at(-1).kind, "agent", "换 space 要留一条时间线");
+});
+
+test("agent 形状不对时拒绝写入", async () => {
+  const { setAgent } = await import("../src/core.js");
+  const { state, id } = seeded();
+  for (const bad of [{ address: "a" }, { space: "spA" }, { address: "", space: "spA" }, "dev5/t2", []]) {
+    assert.throws(() => setAgent(state, id, bad, {}, T0 + 1), /agent/, `应拒绝 ${JSON.stringify(bad)}`);
+  }
+});
+
+test("normalizeState 拒绝形状不对的 agent 字段，并保留合法字段", async () => {
+  const s = normalizeState({
+    v: 1,
+    seq: 1,
+    items: [{ id: "t1", title: "x", agent: { address: "dev5/t2", space: "spA" } }],
+  });
+  assert.deepEqual(s.items[0].agent, { address: "dev5/t2", space: "spA" });
+  assert.throws(
+    () => normalizeState({ v: 1, seq: 1, items: [{ id: "t1", title: "x", agent: "dev5/t2" }] }),
+    /agent/,
+  );
+});
+
+test("cloneItem 深拷贝 agent：改副本不影响原状态", async () => {
+  const { setAgent } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x" }, T0);
+  const id = s.items[0].id;
+  s = setAgent(s, id, { address: "dev5/t2", space: "spA" }, {}, T0 + 1);
+  const next = setAgent(s, id, { address: "dev5/t2", space: "spB" }, {}, T0 + 2);
+  assert.deepEqual(s.items[0].agent, { address: "dev5/t2", space: "spA" }, "原状态不该被就地修改");
+  assert.deepEqual(next.items[0].agent, { address: "dev5/t2", space: "spB" });
+});
+
+// ---------- moveSpace（拖拽：从一个 space 挪到另一个） ----------
+
+test("moveSpace 从 spA 拖到 spB：去掉来源、加上目标，一次写完成", async () => {
+  const { moveSpace } = await import("../src/core.js");
+  const { state, id } = seeded();
+  const next = moveSpace(state, id, "spA", "spB", { by: "panel" }, T0 + 1);
+  const it = next.items[0];
+  assert.deepEqual(it.spaces, ["spB"], "移动是替换来源，不是双关联");
+  const last = it.timeline.at(-1);
+  assert.equal(last.kind, "spaces");
+  assert.deepEqual(last.from, ["spA"]);
+  assert.deepEqual(last.to, ["spB"]);
+  assert.equal(last.by, "panel");
+});
+
+test("moveSpace 不改动原 state（纯函数）", async () => {
+  const { moveSpace } = await import("../src/core.js");
+  const { state, id } = seeded();
+  moveSpace(state, id, "spA", "spB", {}, T0 + 1);
+  assert.deepEqual(state.items[0].spaces, ["spA"], "原 state 不能被就地改掉");
+});
+
+test("moveSpace 只移除被拖出的那一组，其它 space 关联保留", async () => {
+  const { moveSpace } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x", spaces: ["spA", "spC"] }, T0);
+  const id = s.items[0].id;
+  s = moveSpace(s, id, "spA", "spB", {}, T0 + 1);
+  assert.deepEqual([...s.items[0].spaces].sort(), ["spB", "spC"]);
+});
+
+test("moveSpace 到未关联（to=null）只移除来源", async () => {
+  const { moveSpace } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x", spaces: ["spA", "spC"] }, T0);
+  const id = s.items[0].id;
+  s = moveSpace(s, id, "spA", null, {}, T0 + 1);
+  assert.deepEqual(s.items[0].spaces, ["spC"]);
+});
+
+test("moveSpace 来源为 null（从未关联组拖到某个 space）只做新增", async () => {
+  const { moveSpace } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x" }, T0);
+  const id = s.items[0].id;
+  s = moveSpace(s, id, null, "spB", {}, T0 + 1);
+  assert.deepEqual(s.items[0].spaces, ["spB"]);
+});
+
+test("moveSpace 落到 space 上会解除 agent 关联（互斥不变量）", async () => {
+  const { setAgent, moveSpace } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x" }, T0);
+  const id = s.items[0].id;
+  s = setAgent(s, id, { address: "dev5/t2", space: "spA" }, {}, T0 + 1);
+  s = moveSpace(s, id, null, "spB", {}, T0 + 2);
+  assert.deepEqual(s.items[0].spaces, ["spB"]);
+  assert.equal(s.items[0].agent, undefined, "挂了 space 就不能再留着 agent 关联");
+});
+
+test("moveSpace 挪到未关联不会顺手解除 agent（那是另一件事）", async () => {
+  const { setAgent, moveSpace } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x" }, T0);
+  const id = s.items[0].id;
+  s = setAgent(s, id, { address: "dev5/t2", space: "spA" }, {}, T0 + 1);
+  s = moveSpace(s, id, "spZ", null, {}, T0 + 2);
+  assert.deepEqual(s.items[0].agent, { address: "dev5/t2", space: "spA" });
+});
+
+test("moveSpace 目标与来源相同：幂等，不产生新时间线", async () => {
+  const { moveSpace } = await import("../src/core.js");
+  const { state, id } = seeded();
+  const before = state.items[0].timeline.length;
+  const next = moveSpace(state, id, "spA", "spA", {}, T0 + 1);
+  assert.equal(next.items[0].timeline.length, before);
+  assert.deepEqual(next.items[0].spaces, ["spA"]);
+});
+
+test("moveSpace 拖进已关联的 space：不重复添加", async () => {
+  const { moveSpace } = await import("../src/core.js");
+  let s = addItem(emptyState(), { title: "x", spaces: ["spA", "spB"] }, T0);
+  const id = s.items[0].id;
+  s = moveSpace(s, id, "spA", "spB", {}, T0 + 1);
+  assert.deepEqual(s.items[0].spaces, ["spB"]);
+});
+
+test("moveSpace 找不到事项时报错，而不是静默成功", async () => {
+  const { moveSpace } = await import("../src/core.js");
+  assert.throws(() => moveSpace(emptyState(), "nope", "spA", "spB", {}, T0), /找不到/);
+});

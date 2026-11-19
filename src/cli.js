@@ -7,6 +7,8 @@ import {
   setTitle,
   setNote,
   setSpaces,
+  moveSpace,
+  setAgent,
   archiveItem,
   unarchiveItem,
   sortItems,
@@ -31,7 +33,12 @@ const USAGE = `herdr-todo — 记录工作事项并与 Herdr space 关联
   herdr-todo note <id> <文本>          （文本用 - 表示从 stdin 读）
   herdr-todo link <id> <space...>
   herdr-todo unlink <id> [space...]
+  herdr-todo move <id> [space] [--from <space>]
+                                          从一个 space 挪到另一个（省略 = 未关联）
   herdr-todo set-spaces <id> [space...]   整体替换关联（脚本用；面板走 link/unlink）
+  herdr-todo agent <id> <address> --in-space <space>
+                                          关联到某个 agent（替代 space 关联）
+  herdr-todo agent <id> --clear           解除 agent 关联
   herdr-todo archive <id>                 归档（从列表收起，数据仍保留）
   herdr-todo unarchive <id>               取消归档（状态回到 todo）
 
@@ -57,11 +64,14 @@ export class UsageError extends Error {}
 
 // 带值的选项。显式列出来，是为了让 `--` 之前的位置参数（标题、备注、space id）
 // 被当作数据而不是语法：`add -- --space spA` 里的 `--space` 是标题的一部分。
-const VALUE_OPTIONS = new Set(["space", "file", "priority", "status", "note", "by"]);
-const FLAG_OPTIONS = new Set(["json", "all", "reopen"]);
+const VALUE_OPTIONS = new Set(["space", "file", "priority", "status", "note", "by", "in-space"]);
+// `--from` 可以重复（孤儿组拖出时要一次摘掉多个已不存在的 space id），
+// 所以走和 --space 一样的收集，而不是单值。
+const REPEAT_OPTIONS = new Set(["from"]);
+const FLAG_OPTIONS = new Set(["json", "all", "reopen", "clear"]);
 
 function parseArgs(argv) {
-  const opts = { spaces: [], _: [] };
+  const opts = { spaces: [], from: [], _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--") {
@@ -76,13 +86,15 @@ function parseArgs(argv) {
       const eq = a.indexOf("=");
       const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
       if (FLAG_OPTIONS.has(key)) {
-        opts[key === "json" ? "json" : key === "all" ? "all" : "reopen"] = true;
+        opts[key === "json" ? "json" : key === "all" ? "all" : key === "reopen" ? "reopen" : "clear"] = true;
         continue;
       }
-      if (!VALUE_OPTIONS.has(key)) throw new UsageError(`未知选项 --${key}`);
+      if (!VALUE_OPTIONS.has(key) && !REPEAT_OPTIONS.has(key)) throw new UsageError(`未知选项 --${key}`);
       const val = eq === -1 ? argv[++i] : a.slice(eq + 1);
       if (val === undefined) throw new UsageError(`选项 --${key} 缺少值`);
       if (key === "space") opts.spaces.push(val);
+      else if (REPEAT_OPTIONS.has(key)) opts[key].push(val);
+      else if (key === "in-space") opts.inSpace = val;
       else opts[key] = val;
     } else opts._.push(a);
   }
@@ -120,10 +132,16 @@ function renderItemLine(it) {
   return `  ${mark} ${it.id}  ${it.priority}  ${it.title}${note}`;
 }
 
+function linkText(item) {
+  // agent 与 space 互斥（core 的写入函数强制），所以这两者是「或」不是「和」。
+  if (item.agent) return `agent ${item.agent.address}（关掉后回退到 ${item.agent.space}）`;
+  return item.spaces.length ? item.spaces.join(", ") : "（未关联）";
+}
+
 function renderTimeline(item) {
   const lines = [`# ${item.id} ${item.title}`, ""];
   lines.push(`状态：${item.status}    优先级：${item.priority}`);
-  lines.push(`关联：${item.spaces.length ? item.spaces.join(", ") : "（未关联）"}`);
+  lines.push(`关联：${linkText(item)}`);
   lines.push(`创建：${fmtTime(item.created)}    更新：${fmtTime(item.updated)}`);
   if (item.archived != null) lines.push(`归档：${fmtTime(item.archived)}（reopen 可恢复）`);
   if (item.note) {
@@ -163,6 +181,9 @@ function describeEntry(e) {
       const t = listText(e.to, ",") || "无";
       return `关联 ${f} → ${t}`;
     }
+    case "agent":
+      // agent 与 space 互斥（core 的写入函数强制），这一条不是追加而是替换。
+      return `agent ${e.from || "无"} → ${e.to || "无"}`;
     default:
       return e.kind;
   }
@@ -246,7 +267,9 @@ export async function main(argv, env = process.env) {
       out("");
       for (const it of sortItems(pool)) {
         out(renderItemLine(it));
-        if (it.spaces.length) out(`       关联：${it.spaces.join(", ")}`);
+        // agent 关联不打印成「关联：…」的 space 列表：它不是 space。
+        if (it.agent) out(`       关联：agent ${it.agent.address}（关掉后回退到 ${it.agent.space}）`);
+        else if (it.spaces.length) out(`       关联：${it.spaces.join(", ")}`);
       }
       return 0;
     }
@@ -359,6 +382,57 @@ export async function main(argv, env = process.env) {
       return 0;
     }
 
+    case "agent": {
+      // CLI 不连 Herdr，所以「agent 在哪个 space」必须由调用方（面板）传进来。
+      // 这个 space 会在 agent 关掉后承担回退显示，是关联的一部分而不是可选装饰——
+      // 缺了它，那条事项在 agent 消失后就无处可归。--clear 用于解除关联。
+      const [id, address] = rest;
+      if (!id) throw new UsageError("agent 需要 id");
+      if (opts.clear) {
+        if (address) throw new UsageError("--clear 不接受 address");
+        const r = await store.update((st) => setAgent(st, id, null, { by }));
+        out(opts.json ? JSON.stringify(r.state.items.find((i) => i.id === id), null, 2) : `${id} 已解除 agent 关联`);
+        return 0;
+      }
+      if (!address) throw new UsageError("agent 需要 id 和 address（或 --clear）");
+      if (!opts.inSpace) throw new UsageError("agent 需要 --in-space <space>：agent 关掉后靠它回退显示");
+      const link = { address: String(address).trim(), space: String(opts.inSpace).trim() };
+      if (!link.address || !link.space) throw new UsageError("agent 的 address 与 --in-space 都不能为空");
+      const r = await store.update((st) => setAgent(st, id, link, { by }));
+      const item = r.state.items.find((i) => i.id === id);
+      out(opts.json ? JSON.stringify(item, null, 2) : `${id} 关联 → agent ${link.address}（回退 space ${link.space}）`);
+      return 0;
+    }
+
+    case "move": {
+      // 拖拽用：把事项从一个 space 挪到另一个（或挪到未关联）。
+      // 与 link+unlink 的两次写不同，这是一次加锁的读改写，中间不会被并发写覆盖；
+      // 而且「移走」的语义是替换来源，不会留下两个 space 同时显示它。
+      // `--from` 省略表示来源不是某个 space（未关联组、或原先挂在 agent 上）。
+      // 可重复：孤儿组清理要一次摘掉多个已不存在的 space id。
+      const [id, ...pos] = rest;
+      const to = pos[0] ?? opts.spaces[0] ?? null;
+      if (!id) throw new UsageError("move 需要 id");
+      if (pos.length > 1) throw new UsageError("move 只接受一个目标 space");
+      // 来源里的目标本身要去掉：`move t1 spB --from spB` 若照做会先删再加，
+      // 结果虽然一样，却在时间线上多记两条「改了又改回来」，读起来像出过问题。
+      const froms = [...new Set(opts.from)].filter((s) => s && s !== to);
+      const r = await store.update((st) => {
+        // 依次摘来源再落目标，全在同一次加锁的读改写里：多次写会留下中间态，
+        // 也会让并发的另一条写插在中间。
+        let next = st;
+        for (const from of froms) next = moveSpace(next, id, from, null, { by });
+        return moveSpace(next, id, null, to, { by });
+      });
+      const item = r.state.items.find((i) => i.id === id);
+      out(
+        opts.json
+          ? JSON.stringify(item, null, 2)
+          : `${id} 关联 → ${item.spaces.length ? item.spaces.join(", ") : item.agent ? `agent ${item.agent.address}` : "（未关联）"}`,
+      );
+      return 0;
+    }
+
     case "set-spaces": {
       // 整体替换关联列表。脚本里「这组 space 就是全部」的场合用它；
       // 面板不用它——面板手里的列表是 render 快照，拿它做绝对值会覆盖掉
@@ -377,11 +451,14 @@ export async function main(argv, env = process.env) {
 
     case "spaces": {
       // 数据文件里出现过的 space id 及计数：CLI 不连 Herdr，只反映账本自身。
+      // 关联到 agent 的事项按它的**回退 space** 计数：agent 关掉后它就显示在
+      // 那个 space 下，脚本按本命令规划 space 时不该漏掉它。
       const st = await store.read();
       const counts = new Map();
       for (const it of st.items) {
         if (CLOSED_STATUSES.includes(it.status) || it.archived != null) continue;
-        for (const s of it.spaces) counts.set(s, (counts.get(s) || 0) + 1);
+        const ids = it.agent ? [it.agent.space] : it.spaces;
+        for (const s of ids) counts.set(s, (counts.get(s) || 0) + 1);
       }
       if (opts.json) {
         out(JSON.stringify([...counts].map(([id, pending]) => ({ id, pending })), null, 2));

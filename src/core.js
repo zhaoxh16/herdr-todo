@@ -68,6 +68,18 @@ export function normalizeState(raw) {
     if (it.spaces != null && !Array.isArray(it.spaces)) {
       throw new TodoError(`${at}（${it.id}）的 spaces 必须是数组`, "corrupt");
     }
+    // agent 关联必须是 {address, space}：address 用于「关联到哪个 agent」，
+    // space 是关联当时它所在的 space，agent 关掉后靠它回退显示。
+    if (it.agent != null) {
+      const a = it.agent;
+      const ok =
+        a && typeof a === "object" && !Array.isArray(a) &&
+        typeof a.address === "string" && a.address &&
+        typeof a.space === "string" && a.space;
+      if (!ok) {
+        throw new TodoError(`${at}（${it.id}）的 agent 必须是 {address, space}`, "corrupt");
+      }
+    }
     if (it.created != null && !Number.isFinite(Number(it.created))) {
       throw new TodoError(`${at}（${it.id}）的 created 不是时间戳：${JSON.stringify(it.created)}`, "corrupt");
     }
@@ -101,6 +113,8 @@ export function normalizeState(raw) {
       updated: Number(it.updated) || Number(it.created) || 0,
       timeline: timeline.map((e) => ({ ...e })),
       ...(it.archived != null ? { archived: Number(it.archived) } : {}),
+      // 只保留校验通过的形状，字段名照抄，不在这里改语义。
+      ...(it.agent != null ? { agent: { address: it.agent.address, space: it.agent.space } } : {}),
     };
   });
   // seq 只从形如 t12 的 id 推导。旧实现把任意 id 里的所有数字都算进去，
@@ -120,7 +134,7 @@ export function normalizeState(raw) {
 // 每种时间线条目对 from/to 的形状有要求。放进来不合形状的条目，展示层要么
 // 抛错（`(e.to || []).join` 对字符串/数字），要么显示成乱码。
 const LIST_KINDS = new Set(["spaces"]);
-const TEXT_KINDS = new Set(["created", "status", "priority", "title", "archived"]);
+const TEXT_KINDS = new Set(["created", "status", "priority", "title", "archived", "agent"]);
 
 function shapeOk(kind, v) {
   if (v == null) return true;
@@ -158,6 +172,8 @@ function cloneItem(item) {
     ...item,
     spaces: [...item.spaces],
     timeline: item.timeline.map((e) => ({ ...e })),
+    // 深拷贝：调用方会就地改 agent 字段，浅拷贝会让两份状态共享同一个对象。
+    ...(item.agent ? { agent: { ...item.agent } } : {}),
   };
 }
 
@@ -323,11 +339,20 @@ export function setSpaces(state, id, spaces, opts, atRaw) {
   const next = cloneState(state);
   return replaceItem(next, id, (item) => {
     const from = [...item.spaces];
-    if (sameSet(from, clean)) return;
+    // 不变量：space 与 agent 互斥。清空 space 不算「改成 space 关联」，
+    // 所以只有真的挂上至少一个 space 时才解除 agent 关联。
+    if (sameSet(from, clean) && !(clean.length && item.agent)) return;
     const ts = stamp(item, at);
-    item.spaces = clean;
+    if (clean.length && item.agent) {
+      const was = item.agent.address;
+      delete item.agent;
+      pushEntry(item, logEntry("agent", ts, was, null, by));
+    }
+    if (!sameSet(from, clean)) {
+      item.spaces = clean;
+      pushEntry(item, logEntry("spaces", ts, from, [...clean], by));
+    }
     item.updated = ts;
-    pushEntry(item, logEntry("spaces", ts, from, [...clean], by));
   });
 }
 
@@ -335,6 +360,100 @@ function sameSet(a, b) {
   if (a.length !== b.length) return false;
   const sb = new Set(b);
   return a.every((x) => sb.has(x));
+}
+
+/**
+ * 把事项从一个 space 挪到另一个 space（拖拽的主要用法）。
+ *
+ * 与 `setSpaces` 的区别是这个动作**有来源**：从 space A 拖到 space B 时，用户
+ * 的意思是「换到 B」，不是「同时挂在 A 和 B 上」。一条事项可以关联多个 space
+ * （`spaces` 是数组），所以「先 link 后 unlink」两次写会留下中间态；而且面板
+ * 手里的是渲染快照，用两次绝对值写很容易把并发新增的关联覆盖掉。这里在**一次**
+ * 加锁的读改写里完成：去掉 from、加上 to。
+ *
+ * `from` 为 null 表示来源不是任何 space（未关联组、或原先挂在 agent 上），此时
+ * 只做新增。`to` 为 null 表示挪到「未关联」，只做移除。
+ *
+ * 与 `setSpaces` 一样遵守「space 与 agent 互斥」：落到某个 space 上时解除
+ * agent 关联；挪到未关联（to 为 null）不算挂上 space，所以不动 agent——那种
+ * 情况该调用方用 `setAgent(state, id, null)` 明说。
+ *
+ * 多种来源共存时不会留下死关联：`from` 可以是任意一个现存 space id，也可以
+ * 是已不存在 space 的 id（孤儿组清理正是这么用的），后者只是从 `spaces` 里
+ * 摘掉它。调用方若要从孤儿组拖出，把那些死 id 逐个作为 `from` 传一次即可。
+ */
+export function moveSpace(state, id, from, to, opts, atRaw) {
+  const at = nowOf(atRaw);
+  const by = actorOf(opts);
+  const src = typeof from === "string" && from ? from : null;
+  const dst = typeof to === "string" && to ? to : null;
+  if (src === dst) return state;
+  const next = cloneState(state);
+  return replaceItem(next, id, (item) => {
+    const had = [...item.spaces];
+    const kept = src ? had.filter((s) => s !== src) : had;
+    // 已经在目标里就不重复加（多关联的事项拖进它已关联的 space）。
+    const out = dst && !kept.includes(dst) ? [...kept, dst] : kept;
+    // 来源是 agent 关联：拖到某个 space 上就是「换挂 space」，互斥要求同时摘掉
+    // agent。从 Agents 栏拖到 space 行走的正是这条；只靠 UI 先跑一次 --clear
+    // 的话，「清成功、挂失败」会把事项留在未关联里，用户看不出发生过什么。
+    const dropAgent = Boolean(dst) && Boolean(item.agent);
+    if (sameSet(had, out) && !dropAgent) return;
+    const ts = stamp(item, at);
+    if (dropAgent) {
+      const was = item.agent.address;
+      delete item.agent;
+      pushEntry(item, logEntry("agent", ts, was, null, by));
+    }
+    if (!sameSet(had, out)) {
+      item.spaces = out;
+      pushEntry(item, logEntry("spaces", ts, had, [...out], by));
+    }
+    item.updated = ts;
+  });
+}
+
+/**
+ * 把事项关联到某个 agent，或解除关联（agent 传 null）。
+ *
+ * 「agent 替代 space」是用户定的模型：一条事项要么挂在 space 上，要么挂在
+ * 某一个 agent 上，不能同时挂在两者上。这个不变量在这里强制，不靠调用方自觉——
+ * 调用方有侧栏拖拽、详情窗按钮、CLI 三条路径，漏一条就会写出两种状态都有的数据。
+ *
+ * space 参数是**关联当时**该 agent 所在的 space。agent 关掉之后 Host 不提供
+ * 任何反查 lineage 的手段（`agents()` 里它就消失了），回退显示只能靠这里存下的值。
+ */
+export function setAgent(state, id, agent, opts, atRaw) {
+  const at = nowOf(atRaw);
+  const by = actorOf(opts);
+  let next = null;
+  if (agent != null) {
+    const ok =
+      typeof agent === "object" && !Array.isArray(agent) &&
+      typeof agent.address === "string" && agent.address &&
+      typeof agent.space === "string" && agent.space;
+    if (!ok) throw new TodoError("agent 关联必须是 {address, space}", "invalid");
+    next = { address: agent.address, space: agent.space };
+  }
+  const s = cloneState(state);
+  return replaceItem(s, id, (item) => {
+    const from = item.agent?.address ?? null;
+    const to = next?.address ?? null;
+    // address 没变就什么都不做。这里不比 space：agent 在同一地址下换了 space
+    // 时，回退位置应该更新，那是真实变化。
+    if (from === to && (next == null) === (item.agent == null) &&
+        (next == null || (item.agent.space === next.space))) return;
+    const ts = stamp(item, at);
+    if (next) {
+      item.agent = next;
+      // 替代关系：挂上 agent 就清掉 space 关联，否则两个视图会各显示一份。
+      item.spaces = [];
+    } else {
+      delete item.agent;
+    }
+    item.updated = ts;
+    pushEntry(item, logEntry("agent", ts, from, to, by));
+  });
 }
 
 /**

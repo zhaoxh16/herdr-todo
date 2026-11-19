@@ -99,7 +99,7 @@ FILE4="$TMP/argv.json"
 # 面板把 "add <标题>" 传成：--json --by panel --file=… <子命令> -- <位置参数>
 # 标题恰好叫 -h / -- / --space 时，必须仍被当成标题。
 for t in "-h" "--" "--space" "--file=/etc/passwd" "-"; do
-  node "$BIN" --json --by panel --file="$FILE4" add -- "$t" >/dev/null 2>&1 || fail "标题「$t」应能创建"
+  node "$BIN" --json --by panel --file="$FILE4" add -- "$t" >/dev/null 2>&1 || fail "标题「${t}」应能创建"
 done
 node "$BIN" --file "$FILE4" export > "$TMP/argv.json.out"
 grep -c '"title"' "$TMP/argv.json.out" | grep -qx 5 || fail "5 个特殊标题应各自创建一条"
@@ -180,6 +180,93 @@ FILE8="$TMP/perm-$(date +%s).json"
 PERM=$(ls -l "$FILE8" | cut -c1-10)
 [ "$PERM" = "-rw-------" ] || fail "umask 077 下应为 -rw-------，实际 $PERM"
 pass "umask 077 下权限为 600"
+
+echo "== agent 关联：替代 space，且回退位置记下来 =="
+FILE9="$TMP/agent.json"
+node "$BIN" --file "$FILE9" add "要挂 agent 的" --space spA >/dev/null
+node "$BIN" --file "$FILE9" --in-space=spFallback agent t1 dev5/t2 >/dev/null || fail "agent 关联应成功"
+node "$BIN" --file "$FILE9" export | node -e '
+  let s = "";
+  process.stdin.on("data", (d) => (s += d)).on("end", () => {
+    const it = JSON.parse(s).items[0];
+    if (!it.agent) { console.error("agent 未落盘"); process.exit(1); }
+    if (it.agent.address !== "dev5/t2" || it.agent.space !== "spFallback") { console.error(JSON.stringify(it.agent)); process.exit(1); }
+    if (it.spaces.length) { console.error("agent 关联应清空 spaces：" + JSON.stringify(it.spaces)); process.exit(1); }
+  });' || fail "agent 关联应替代 space 且记录回退 space"
+# 反向：重新挂 space 必须解掉 agent，否则会出现「同时挂在两者上」的第四条状态。
+node "$BIN" --file "$FILE9" link t1 spB >/dev/null
+node "$BIN" --file "$FILE9" export | node -e '
+  let s = "";
+  process.stdin.on("data", (d) => (s += d)).on("end", () => {
+    const it = JSON.parse(s).items[0];
+    if (it.agent !== undefined) { console.error("挂 space 后 agent 应被解除"); process.exit(1); }
+    if (it.spaces.join(",") !== "spB") { console.error(JSON.stringify(it.spaces)); process.exit(1); }
+  });' || fail "link space 应解除 agent 关联"
+pass "agent 与 space 互斥"
+
+echo "== agent 关联：不暴露成 space =="
+# show/list 的「关联：」行过去只打印 spaces，agent 关联会显示成「（未关联）」。
+node "$BIN" --file "$FILE9" --in-space=spFallback agent t1 dev5/t2 >/dev/null
+node "$BIN" --file "$FILE9" show t1 | grep -q "agent dev5/t2" || fail "show 应显示 agent 关联"
+node "$BIN" --file "$FILE9" show t1 | grep -q "未关联" && fail "show 不应把 agent 关联说成未关联"
+node "$BIN" --file "$FILE9" list | grep -q "agent dev5/t2" || fail "list 应显示 agent 关联"
+# spaces 计数按回退 space 算：agent 关掉后它就显示在那里。
+node "$BIN" --file "$FILE9" spaces | grep -q "spFallback  1 项未处理" || { node "$BIN" --file "$FILE9" spaces; fail "spaces 应按回退 space 计数"; }
+pass "agent 关联在输出里不被当成 space"
+
+echo "== agent 关联：--clear 与缺参 =="
+if node "$BIN" --file "$FILE9" agent t1 >/dev/null 2>&1; then fail "agent 缺 address 且无 --clear 应失败"; fi
+if node "$BIN" --file "$FILE9" agent t1 dev5/t2 >/dev/null 2>&1; then fail "缺 --in-space 应失败"; fi
+node "$BIN" --file "$FILE9" agent t1 --clear >/dev/null || fail "--clear 应成功"
+node "$BIN" --file "$FILE9" export | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(JSON.parse(s).items[0].agent!==undefined){console.error("--clear 后 agent 应消失");process.exit(1)}})' \
+  || fail "--clear 应移除 agent 关联"
+node "$BIN" --file "$FILE9" show t1 | grep -q "未关联" || fail "解除后应显示未关联"
+pass "agent --clear 与缺参校验"
+
+echo "== move：从一个 space 挪到另一个（一次读改写） =="
+FILE10="$TMP/move.json"
+node "$BIN" --file "$FILE10" add "要挪的" --space spA >/dev/null
+node "$BIN" --file "$FILE10" move t1 spB --from spA >/dev/null || fail "move 应成功"
+node "$BIN" --file "$FILE10" export | node -e '
+  let s = "";
+  process.stdin.on("data", (d) => (s += d)).on("end", () => {
+    const it = JSON.parse(s).items[0];
+    if (it.spaces.join(",") !== "spB") { console.error("移动应替换来源：" + JSON.stringify(it.spaces)); process.exit(1); }
+  });' || fail "move 应去掉来源、加上目标"
+node "$BIN" --file "$FILE10" move t1 --from spB >/dev/null || fail "move 到未关联应成功"
+node "$BIN" --file "$FILE10" show t1 | grep -q "未关联" || fail "move 到未关联后应显示未关联"
+# 目标必须是单个：多给一个位置参数过去会被当成第二个 space 并静默只取第一个。
+if node "$BIN" --file "$FILE10" move t1 spB spC >/dev/null 2>&1; then fail "move 只接受一个目标 space"; fi
+if node "$BIN" --file "$FILE10" move nope spB >/dev/null 2>&1; then fail "move 找不到事项时应失败"; fi
+pass "move 从来源移到目标 / 未关联"
+
+# 多个 --from（孤儿组清理）：一次摘掉多个已不存在的 space id，再落到目标
+FILE11="$TMP/move-orphan.json"
+node "$BIN" --file "$FILE11" add "双孤儿" --space spDEAD1 --space spDEAD2 --space spB >/dev/null
+node "$BIN" --file "$FILE11" move t1 spC --from spDEAD1 --from spDEAD2 >/dev/null || fail "多个 --from 应成功"
+node "$BIN" --file "$FILE11" export | node -e '
+  let s = "";
+  process.stdin.on("data", (d) => (s += d)).on("end", () => {
+    const it = JSON.parse(s).items[0];
+    const got = [...it.spaces].sort().join(",");
+    if (got !== "spB,spC") { console.error("应摘掉两个死来源并保留 spB、加上 spC：" + got); process.exit(1); }
+  });' || fail "多个 --from 应逐个摘掉"
+pass "move 支持多个 --from（孤儿清理）"
+
+# --from 等于目标时是空操作：不该先删再加，时间线必须干净
+FILE12="$TMP/move-self.json"
+node "$BIN" --file "$FILE12" add "原地" --space spB >/dev/null
+node "$BIN" --file "$FILE12" move t1 spB --from spB >/dev/null || fail "原地 move 应成功"
+node "$BIN" --file "$FILE12" export | node -e '
+  let s = "";
+  process.stdin.on("data", (d) => (s += d)).on("end", () => {
+    const it = JSON.parse(s).items[0];
+    if (it.spaces.join(",") !== "spB") { console.error(JSON.stringify(it.spaces)); process.exit(1); }
+    const kinds = it.timeline.map((e) => e.kind).filter((k) => k !== "created");
+    if (kinds.length) { console.error("原地 move 不该产生时间线：" + kinds.join(",")); process.exit(1); }
+  });' || fail "原地 move 应是空操作"
+pass "move --from 等于目标时是空操作"
+
 
 echo ""
 echo "ALL CLI TESTS PASSED"

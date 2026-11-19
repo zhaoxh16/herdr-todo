@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""把 todo 面板插进一份独立的布局文件（克隆自 App 自带的 main）。
+"""把待办接进一份独立的布局文件（克隆自 App 自带的 main）。
+
+待办列表住在左侧 Spaces 侧栏里，所以这里只做一件事：把侧栏的 `spaces` 块
+指向本项目的克隆件 `spaces-todo`（它在原生 Spaces 之上追加每个 space 的待办行）。
+右侧 panel-body 与 tab bar 都保持 App 原样——待办不再占用右侧面板。
 
 不改 main.json 本身：Herdr 每次启动都会用自带版本覆盖 main，
 所以必须另存一个布局，用户的改动才能留住。
@@ -14,8 +18,8 @@ import time
 APP_HOME = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 SRC = os.path.join(APP_HOME, "layouts", "main.json")
 DST = os.path.join(APP_HOME, "layouts", "herdr-todo.json")
-MOD = "herdr-todo"
-BLOCK_ID = "todo-block"
+MOD = "spaces-todo"
+AGENTS_MOD = "agents-todo"
 
 
 def find(node, node_id):
@@ -37,37 +41,22 @@ def main():
     with open(SRC, encoding="utf-8") as fh:
         layout = json.load(fh)
 
-    # 待办不是另起一列，而是接进 App 自带的右侧面板 stack（panel-body）。
-    # 这样它和 Files/Changes 完全同构：同一个显隐开关、同一份宽度、同一套
-    # 「当前显示哪个面板」的语义。自建一列会和原生面板并排，关掉一个还剩另一个。
-    stack = find(layout, "panel-body")
-    if stack is None:
-        print("main 布局结构变了：找不到 panel-body stack", file=sys.stderr)
+    # 侧栏的 spaces 块：换成带待办行的克隆件。
+    spaces_block = find(layout, "spaces")
+    if spaces_block is None:
+        print("main 布局结构变了：找不到侧栏 spaces 块", file=sys.stderr)
         return 1
+    spaces_block.setdefault("content", {})["mod"] = MOD
 
-    children = stack.setdefault("children", [])
-    existing = next((c for c in children if c.get("id") == BLOCK_ID), None)
-    if existing is None:
-        children.append({"id": BLOCK_ID, "type": "block", "content": {"mod": MOD}})
-    else:
-        # id 撞上了但内容指向别的 mod（用户自己改过 main，或另一个工具占了这个 id）：
-        # 直接设 active 会让布局加载一个不相干的 mod。
-        existing.setdefault("content", {})["mod"] = MOD
+    # Agents 栏同理：它是 App 自带 mod，要显示待办必须换成克隆件。
+    # 找不到不算失败——用户可能自己删掉了 Agents 块，那种情况下没有地方
+    # 显示 agent 待办，但不该让整个安装失败。
+    agents_block = find(layout, "agents")
+    if agents_block is not None:
+        agents_block.setdefault("content", {})["mod"] = AGENTS_MOD
 
-    # 默认显示 Todo。这份布局的名字就是 Herdr + Todo，第一次按 ctrl-alt-t
-    # 却弹出 Files 会让人以为快捷键绑错了；每个 space 之后的显隐选择由
-    # tabs mod 记在 localStorage 里，这里只决定「还没有记忆时」的那一次。
-    stack["active"] = BLOCK_ID
-
-    # tab bar 换成带 Todo 按钮的克隆件；它和 Files/Changes 的按钮并排。
-    tabs_block = find(layout, "tabs")
-    if tabs_block is None:
-        print("main 布局结构变了：找不到 tabs 块", file=sys.stderr)
-        return 1
-    tabs_block.setdefault("content", {})["mod"] = "tabs-todo"
-
+    # App 自带 main 没有 title；给这份独立的布局一个可辨识的名字。
     layout["id"] = "herdr-todo-root"
-    # 自带 main 没有 title；给这份独立的布局一个可辨识的名字。
     layout["title"] = "Herdr + Todo"
 
     # 这份布局是用户的文件：他可能调过面板宽度或默认面板。重跑安装会把它
@@ -78,11 +67,18 @@ def main():
         shutil.copy2(DST, backup)
         print(f"已备份 {os.path.basename(DST)} → {os.path.basename(backup)}")
 
-    tmp = os.path.join(os.path.dirname(DST), f".{os.path.basename(DST)}.tmp")
+    # 布局文件可能是 dotfiles 里的符号链接（和 keys.json 一样的用法）：
+    # 写到它指向的真实文件，否则 os.replace 会把链接换成普通文件，
+    # dotfiles 里那份永远停在旧内容，用户之后的编辑也写不到它上面。
+    target = os.path.realpath(DST) if os.path.islink(DST) else DST
+    # 临时文件必须和目标同目录：跨文件系统 rename 会 EXDEV（iCloud、挂载卷）。
+    tmp = os.path.join(os.path.dirname(target), f".{os.path.basename(target)}.tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(layout, fh, indent=1, ensure_ascii=False)
-    os.replace(tmp, DST)
-    print(f"已写入 {DST}")
+    if os.path.exists(target):
+        shutil.copymode(target, tmp)
+    os.replace(tmp, target)
+    print(f"已写入 {target}")
     return 0
 
 

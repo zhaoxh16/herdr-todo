@@ -4,9 +4,8 @@
 Herdr 的「Keyboard shortcuts」就是 keys.json，所以这里不自己发明配置：
 直接写标准绑定，之后用户随时可以在 App 里改，或再跑一次脚本恢复默认。
 
-两条绑定走的是 App 原生命令，不依赖 mod 常驻：
-  - 展开/收起侧栏：layout.toggle（列被拖窄或被隐藏都能一键切换）
-  - 快速记录：mod.open（再按一次关闭，等价于弹窗的开关）
+只保留一条绑定：快速记录（mod.open）。待办列表现在就在左侧 Spaces 侧栏里，
+不再需要「切换右侧面板看待办」的快捷键；旧版本写进去的那条会被清掉。
 """
 
 import errno
@@ -21,12 +20,16 @@ KEYS = os.path.join(APP_HOME, "keys.json")
 PANEL_COLUMN_ID = "panel"
 MOD_NAME = "herdr-todo"
 
+# 旧版本由本脚本写入、现已不再需要的那条绑定。只有命令与参数都完全一致
+# 才删除——用户自己把 ctrl-alt-t 改绑到别处时，那是他的设置，不能动。
+RETIRED = {
+    "ctrl-alt-t": {"command": "layout.toggle", "args": {"id": PANEL_COLUMN_ID}},
+}
+
 # Herdr 按分区解析：layout:<name> 只在那个布局显示时生效，优先级高于 global。
-# 绑在 global，因为右侧面板在所有布局里都是同一个节点；toggle 会把
-# Files/Changes/Todo 所在的整列一起收起，和点 tab bar 上的按钮等价。
+# 快速记录绑在 global，任何布局下都能用。
 DEFAULTS = {
     "global": {
-        "ctrl-alt-t": {"command": "layout.toggle", "args": {"id": PANEL_COLUMN_ID}},
         "ctrl-alt-n": {"command": "mod.open", "args": {"name": MOD_NAME}},
     }
 }
@@ -55,14 +58,25 @@ def main():
 
     changed = []
 
-    # 清理旧版本留下的绑定：同一个命令绑到了已经不存在的节点（例如早期自建
-    # 的 todo-column）。分区优先级高于 global，残留项会让快捷键指错目标。
+    # 清理旧版本留下的绑定：
+    #  - 指向已删除节点（早期自建的 todo-column）的；
+    #  - 本脚本当初写入、现已退休的（例如 ctrl-alt-t 切换右侧面板列）。
+    # 分区优先级高于 global，残留项会继续生效，让用户的改动看起来不起作用。
     for section in list(keys):
         for combo in list(keys[section]):
             action = keys[section][combo]
-            if isinstance(action, dict) and action.get("args", {}).get("id") == "todo-column":
+            # args 必须是对象；手写或旧格式里它可能是字符串/数组/null，
+            # 直接 .get 会 AttributeError 让整个快捷键步骤失败。
+            args = action.get("args") if isinstance(action, dict) else None
+            if isinstance(args, dict) and args.get("id") == "todo-column":
                 del keys[section][combo]
                 changed.append(f"清理 {section} {combo}：指向已删除的 todo-column")
+            # 先确认这个组合键在 RETIRED 里，再比动作。只写
+            # `RETIRED.get(combo) == action` 会让任何值为 null 的绑定
+            # （get 对未登记的键返回 None）被当成退役项删掉。
+            elif combo in RETIRED and action == RETIRED[combo]:
+                del keys[section][combo]
+                changed.append(f"清理 {section} {combo}：该绑定已退役（待办改在左侧侧栏）")
         if not keys[section]:
             del keys[section]
 

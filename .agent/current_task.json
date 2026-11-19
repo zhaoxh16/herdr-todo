@@ -1,7 +1,7 @@
 {
-  "task": "herdr-todo",
-  "task_dir": ".agent/herdr-todo",
-  "plan_path": ".agent/herdr-todo/plan.md",
+  "task": "todo-sidebar",
+  "task_dir": ".agent/todo-sidebar",
+  "plan_path": ".agent/todo-sidebar/plan.md",
   "updated_by": "planning",
-  "updated_at": "2026-11-18T17:25:00+08:00"
+  "updated_at": "2026-11-19T13:40:00+08:00"
 }

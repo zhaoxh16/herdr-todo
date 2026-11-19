@@ -1,41 +1,29 @@
-// 待办面板。同一个 mod 有两种形态：
-//  - 布局里的常驻块（右侧栏）：按 space 分组的完整视图 + 同屏详情区
-//  - 弹窗（props().overlay 存在）：快速记录一条事项
-// 数据来自 ~/.local/share/herdr-todo/todos.json，与 CLI 共用；外部改动靠 watchFolder 感知。
+// herdr-todo 的两种窗口：一条待办的详情，以及快速记录。
+//
+// 待办**列表**不在这里——它在左侧 Spaces 侧栏（mod/spaces/main.js），
+// 由克隆的 spaces mod 渲染。这个 mod 只被侧栏按需打开：
+//   props { detail: "<id>" }  → 详情窗（可拖动），改完立刻可见于侧栏
+//   props { capture: true, space? } → 快速记录窗（dialog），回车创建
+//
+// 窗口都是新开实例、props 在创建时给定：同一 mod 已经开着时再次 openOverlay
+// 不会把新 props 送给已有实例（实测 update 不被调用），所以两者都用固定 key
+// 区分，侧栏每次点击都开新的一份。
+//
+// 数据来自 ~/.local/share/herdr-todo/todos.json，与 CLI 共用；写入一律走 CLI
+// （见 store.js 顶部说明），因此侧栏与本窗看到的永远是同一份账本。
 
-import { View, div, list } from "gpui-kit";
+import { View, div } from "gpui-kit";
 import {
   v_flex,
   h_flex,
-  ScrollHandle,
   InputState,
   Input,
   TextareaState,
   Textarea,
 } from "gpui-base";
-import {
-  spaces,
-  theme,
-  props,
-  closeOverlay,
-  run,
-  watchFolder,
-  checking,
-  focused,
-} from "herdr";
+import { spaces, agents, theme, props, closeOverlay, checking, watchFolder } from "herdr";
 
-import {
-  groupBySpace,
-  sortItems,
-  summary,
-  findItem,
-  timelineOf,
-  CLOSED_STATUSES,
-  STATUSES,
-  PRIORITIES,
-} from "./core.js";
-// 写入一律走 CLI（见 store.js 顶部说明）：面板不自己写文件，
-// 这样 CLI 的锁是唯一的互斥点，不存在两套机制互相看不见的问题。
+import { findItem, timelineOf, CLOSED_STATUSES, STATUSES, PRIORITIES } from "./core.js";
 import { read, command, dataDir } from "./store.js";
 
 const STATUS_LABEL = {
@@ -45,26 +33,6 @@ const STATUS_LABEL = {
   done: "完成",
   cancelled: "取消",
 };
-const STATUS_GLYPH = {
-  todo: "○",
-  doing: "◐",
-  blocked: "●",
-  done: "✓",
-  cancelled: "✕",
-};
-// 每个状态在界面上的语义色：只有"需要我动手"的才用强调色。
-function statusColor(status, t) {
-  if (status === "blocked") return t.blocked ?? t.red ?? t.ansi1;
-  if (status === "done") return t.done ?? t.green ?? t.ansi2;
-  if (status === "doing") return t.working ?? t.blue ?? t.ansi4;
-  if (status === "cancelled") return t.dim;
-  return t.muted;
-}
-function priorityColor(p, t) {
-  if (p === "P0") return t.red ?? t.ansi1;
-  if (p === "P1") return t.peach ?? t.yellow ?? t.ansi3;
-  return t.muted;
-}
 
 function relTime(ms) {
   if (!ms) return "";
@@ -104,59 +72,116 @@ function describeEntry(e) {
       const g = listText(e.to, ", ") || "无";
       return `关联 ${f} → ${g}`;
     }
+    case "agent":
+      // agent 与 space 互斥（core 的写入函数强制），所以这一条不是在 space
+      // 关联之外追加的，而是替换掉它。
+      return `改挂 agent ${e.from || "无"} → ${e.to || "无"}`;
     default:
       return e.kind;
   }
 }
 
-/** Herdr 的 space 列表转成本面板用于分组的轻量结构。 */
+/** Herdr 的 space 列表转成本面板用于显示名字的轻量结构。 */
 function currentSpaces() {
   try {
     return (spaces() ?? []).map((s) => ({
       id: s.id,
       name: s.name,
       machine: s.machine ?? null,
-      branch: s.branch ?? null,
-      tabs: (s.tabs ?? []).length,
-      status: s.status ?? null,
     }));
   } catch {
     return [];
   }
 }
 
+/**
+ * agent 地址 → 人能读的名字。
+ *
+ * 用 `title`（终端标题，Agents 栏那一行显示的就是它）：`space_name` 是它所在
+ * **space** 的名字，两个 agent 在同一个 space 里就会显示成同一个名字，反而
+ * 认不出是哪一条。agent 关掉之后它不在列表里了，退回地址——地址里带着 space
+ * 前缀，仍然能看出它原来在哪。
+ */
+function agentName(address) {
+  try {
+    const a = (agents() ?? []).find((x) => x.address === address);
+    return a?.title || a?.program?.name || address;
+  } catch {
+    return address;
+  }
+}
+
 export default class Todo extends View {
   init(p, cx) {
-    this.overlayId = props()?.overlay ?? null;
     // 视图自己的长期上下文：所有异步任务都挂在它下面（见 spawn）。
     this.cx = cx;
+    this.overlayId = props()?.overlay ?? null;
+    // 有 detail 就是详情窗，其余一律是快速记录：
+    // ctrl-alt-n 走的是 mod.open，宿主只给 props().overlay，不带 capture 标记。
+    this.detailId = props()?.detail ?? null;
+    this.mode = this.detailId ? "detail" : "capture";
+
     this.state = null;
-    this.selectedId = null;
-    this.showClosed = false;
-    this.expanded = new Set();
-    // 用户手动折叠/展开过的组：一旦点过，就以他的意见为准，不再套默认规则。
-    this.override = new Set();
-    this.draft = InputState.new({ placeholder: "要做什么？回车创建" });
-    this.noteDraft = null;
-    this.noteEditingId = null;
     // 上一次写入失败的原因。写入成功即清空——它标记的是「这次写没成」，
     // 不是「曾经出过错」；后者会让提示永远挂在界面上。
     this.writeError = null;
     // 上一次读取失败的原因。与写失败分开：读失败意味着「你看到的是旧数据」。
     this.readError = null;
-    // 弹窗提交的防重复闸门：输入框在 await 之后才清空，中途再点一次会多建一条。
-    this.busy = false;
+    this.noteDraft = null;
+    this.noteEditingId = null;
 
-    if (this.overlayId) {
+    if (this.mode === "capture") {
+      this.draft = InputState.new({ placeholder: "要做什么？回车创建" });
+      // 弹窗提交的防重复闸门：输入框在 await 之后才清空，中途再点一次会多建一条。
+      this.busy = false;
       this.draft.on("submit", () => this.createFromDraft());
       if (!checking()) this.draft.focus();
     } else {
-      this.scroll = ScrollHandle.new();
+      // 详情窗是 kind:"window"：Esc 不会被宿主自动处理，得自己接。
+      // 键盘只落在 track_focus 的元素上，所以窗口打开时主动拿一次焦点。
+      this.focusHandle = cx.focus_handle();
       this.load();
-      this.watch();
-      // 兜底轮询：watchFolder 在个别文件系统上可能漏事件，低频重读保证最终一致。
+      // 账本是共享文件：CLI、另一个详情窗、侧栏的 ＋ 都可能改它。窗开着时不
+      // 重读，用户看到的就一直是打开那一刻的快照（侧栏却已经变了）。
+      // 与侧栏同一套口径：watchFolder 驱动 + 10 秒兜底轮询。
+      this.watch(cx);
       cx.timer.every(10000, () => this.load());
+      this.takeFocus();
     }
+  }
+
+  /**
+   * 把键盘收回窗口本身。
+   *
+   * window 形态打开时不自动拿键盘（herdr.d.ts：It doesn't take the keyboard
+   * when it opens），而 FocusHandle.focus() 只对**已经渲染出来**的元素生效。
+   * 所以不能「等固定毫秒再 focus 一次」：慢机器上那一刻元素还没画出来，快机器
+   * 上又白等；而且载入中/读失败/事项不存在这几个分支以前根本没有 track_focus，
+   * 等多久都拿不到键盘。这里改成重试到 is_focused() 为真或次数用完，
+   * 各分支统一都挂同一个 focusHandle。
+   */
+  takeFocus() {
+    if (checking() || !this.focusHandle) return;
+    this.cx.spawn(async (c) => {
+      for (let i = 0; i < 20; i++) {
+        try {
+          if (this.focusHandle.is_focused()) return;
+          this.focusHandle.focus();
+        } catch {
+          // 还没渲染出来时可能直接抛；窗口关掉时也一样。两种情况都靠下一轮重试
+          // 区分——重试到上限就安静放弃（窗口多半已经不在了）。
+        }
+        await c.sleep(30);
+      }
+    });
+  }
+
+  /** 退出备注编辑：清掉草稿，把键盘从输入框收回窗口（否则 Esc 要按两次）。 */
+  leaveNote() {
+    this.noteEditingId = null;
+    this.noteDraft = null;
+    this.takeFocus();
+    this.cx.notify();
   }
 
   async load() {
@@ -164,24 +189,26 @@ export default class Todo extends View {
       this.state = await read();
       this.readError = null;
     } catch (e) {
-      // 读失败单独记。它和写失败是两回事：读失败说明「看到的可能是旧数据」，
-      // 写失败说明「刚才的操作没落盘」。
       this.readError = String(e.message ?? e);
     }
-    this.cx.notify();
+    try {
+      this.cx.notify();
+    } catch {
+      // 窗口已经关掉：没有界面要刷新。
+    }
   }
 
-  watch() {
+  /** 账本目录变动就重读。目录还不存在时等 3 秒再试，避免空转。 */
+  watch(cx) {
     if (checking()) return;
-    this.cx.spawn(async (cx) => {
+    this.cx.spawn(async (c) => {
       for (;;) {
         try {
           await watchFolder(dataDir());
         } catch {
-          // 目录还不存在（第一次安装、还没写入过）。不能立刻重试：
-          // watchFolder 会同步 reject，空转几百毫秒就是上万次读取 + 重绘。
-          // 等 3 秒再试；真正的刷新由 10s 兜底轮询负责。
-          await cx.sleep(3000);
+          // 还没写过账本，目录不存在。watchFolder 会立刻 reject，
+          // 空转几百毫秒就是上万次读取 + 重绘。
+          await c.sleep(3000);
           continue;
         }
         await this.load();
@@ -210,7 +237,7 @@ export default class Todo extends View {
       try {
         c.notify();
       } catch {
-        // 视图已经关掉（例如弹窗添加完自己关了）：没有界面要刷新。
+        // 视图已经关掉（例如记录完自己关了）：没有界面要刷新。
       }
     });
   }
@@ -223,10 +250,10 @@ export default class Todo extends View {
   /**
    * 加/删一个 space。发的是**增量**，不是「完整的下一份列表」。
    *
-   * 面板持有的 item 是上一次 render 的快照。若把「快照 + 我刚选的那个」当成
-   * 绝对列表发给 CLI（set-spaces），这期间别人（另一个终端、CLI、同一个人连点
-   * 两个按钮）加的关联会被静默覆盖掉。link/unlink 由 CLI 在锁内基于最新账本
-   * 合并，快照只用来回答「这一次点的是增还是删」。
+   * 本窗持有的 item 是上一次读取的快照。若把「快照 + 我刚选的那个」当成
+   * 绝对列表发给 CLI（set-spaces），这期间别人（另一个终端、CLI、同一个
+   * space 的另一次点击）加的关联会被静默覆盖掉。link/unlink 由 CLI 在锁内
+   * 基于最新账本合并，快照只用来回答「这一次点的是增还是删」。
    */
   addSpace(item, spaceId) {
     this.mutate(["link", item.id, spaceId]);
@@ -240,7 +267,7 @@ export default class Todo extends View {
    * 跑一条 CLI 写命令，然后把账本重读一遍。
    *
    * opts.onDone 只在写成功后执行（调用方用它收起编辑器一类）；
-   * opts.flags 是面板自己的选项（`--note=…` 等），由 command() 放到子命令之前。
+   * opts.flags 是本窗自己的选项（`--note=…` 等），由 command() 放到子命令之前。
    */
   mutate(args, opts = {}) {
     const { onDone, flags } = opts;
@@ -261,9 +288,10 @@ export default class Todo extends View {
   createFromDraft() {
     const title = String(this.draft.value?.() ?? "").trim();
     if (!title || this.busy) return;
-    // 弹窗形态默认把事项挂到当前聚焦的 space，省掉一次选择。
-    const here = this.overlayId ? focusedSpaceId() : null;
-    // 防重复提交：输入框在 await 之后才清空，中途再点一次会多建一条。
+    // 只有明确传了 space 才挂上去。**不**退回「当前聚焦的 space」：
+    // 从「未关联」那一行的 ＋ 或 ctrl-alt-n 打开时没有 space，若默认挂到
+    // 屏幕上正开着的 space 上，用户就再也建不出未关联的事项了。
+    const here = props()?.space ?? null;
     this.busy = true;
     // 标题作为位置参数，必须落在 -- 之后（command() 负责），否则叫 `-h`
     // 或 `--space` 的标题会被当成选项。space 用 --space=… 单 token 传入。
@@ -271,7 +299,7 @@ export default class Todo extends View {
     this.spawn(async () => {
       try {
         await command(["add", title], { flags });
-        // 已经落盘：先清草稿、关窗，再刷新列表。刷新失败不该让用户以为
+        // 已经落盘：先清草稿、关窗，再刷新。刷新失败不该让用户以为
         // 没写进去——那样他会再按一次回车，多建一条重复事项。
         this.draft.set_value("");
         if (this.overlayId) closeOverlay(this.overlayId);
@@ -285,12 +313,17 @@ export default class Todo extends View {
   // ---------- render ----------
 
   render(cx) {
-    return this.overlayId ? this.renderCapture(cx) : this.renderPanel(cx);
+    // 按钮 id 按「标签 + 本次渲染内的序号」生成（见文件末尾的 button()）。
+    // 序号每次渲染从头数：同一份状态下渲染出的按钮顺序是稳定的，id 也就稳定；
+    // 若让计数器跨渲染累加，每次重绘 id 都变，元素身份不稳，悬停状态会丢。
+    buttonSeq = 0;
+    return this.mode === "capture" ? this.renderCapture(cx) : this.renderDetailWindow(cx);
   }
 
-  renderCapture(cx) {
+  renderCapture() {
     const t = theme();
-    const here = focusedSpaceId();
+    // 与 createFromDraft 同一口径：没预填就是「不关联」，不猜当前 space。
+    const here = props()?.space ?? null;
     const name = here ? (currentSpaces().find((s) => s.id === here)?.name ?? here) : null;
     return v_flex()
       .id("capture-root")
@@ -317,7 +350,7 @@ export default class Todo extends View {
               .px(8)
               .py(6)
               .rounded(6)
-              .bg(t.input ?? t.background)
+              .bg(t.input)
               .border(1)
               .border_color(t.border)
               .child(Input.new(this.draft)),
@@ -328,240 +361,109 @@ export default class Todo extends View {
         div()
           .text_size(11)
           .text_color(t.dim)
-          .child(here ? `将挂到当前 space：${name}` : "未关联 space（可在面板里补）"),
+          .child(here ? `将挂到 space：${name}` : "未关联 space（可在详情里补）"),
       )
-      .children(this.errorText() ? [div().text_size(11).text_color(t.red ?? t.ansi1).child(this.errorText())] : []);
-  }
-
-  renderPanel(cx) {
-    const t = theme();
-    const st = this.state;
-    const err = this.errorText();
-    if (!st && err) {
-      return v_flex().size_full().p(12).gap(6).bg(t.surface)
-        .child(div().text_size(13).text_color(t.red ?? t.ansi1).child("数据读取失败"))
-        .child(div().text_size(11).text_color(t.muted).child(err));
-    }
-    if (!st) {
-      return v_flex().size_full().p(12).bg(t.surface).child(div().text_size(12).text_color(t.muted).child("载入中…"));
-    }
-
-    const known = currentSpaces();
-    const sum = summary(st.items);
-    const groups = groupBySpace(st.items, known);
-    // 归档项不列进「已完成」：它已经在列表之外（用户要求的就是「别烦我」）。
-    const closed = sortItems(
-      st.items.filter((i) => CLOSED_STATUSES.includes(i.status) && i.archived == null),
-    );
-    const selected = this.selectedId ? findItem(st, this.selectedId) : null;
-
-    const rows = [];
-    rows.push(this.renderHeader(t, sum, closed, cx));
-
-    if (err) {
-      rows.push(div().text_size(11).text_color(t.red ?? t.ansi1).child(err));
-    }
-
-    // 默认只展开当前 space：别的 space 只露一行标题和计数，
-    // 这样面板永远回答"我手上的这个 space 还有什么事"。
-    // 当前 space 自己没事时，退回展开第一个有事的组，避免面板看起来是空的。
-    const here = focusedSpaceId();
-    const hereHasItems = groups.some((g) => g.key === here && g.items.length > 0);
-    const fallbackKey = hereHasItems ? null : groups.find((g) => g.items.length > 0)?.key ?? null;
-
-    for (const g of groups) {
-      const folded = this.isFolded(g, here, fallbackKey);
-      rows.push(this.renderGroupHeader(g, t, here, folded));
-      if (folded) continue;
-      if (!g.items.length) {
-        rows.push(div().px(10).py(3).text_size(11).text_color(t.dim).child("（无待办）"));
-        continue;
-      }
-      for (const it of g.items) rows.push(this.renderItemRow(it, t, cx, g.key));
-    }
-
-    rows.push(this.renderClosedSection(closed, t, cx));
-
-    return v_flex().size_full().bg(t.surface).children([
-      v_flex().flex_1().overflow_y_scrollbar().gap(1).track_scroll(this.scroll).children(rows),
-      selected ? this.renderDetail(selected, t, cx, known) : div(),
-    ]);
-  }
-
-  renderHeader(t, sum, closed, cx) {
-    return v_flex()
-      .px(10)
-      .pt(8)
-      .pb(6)
-      .gap(2)
-      .border_b(1)
-      .border_color(t.border)
-      .child(
-        h_flex()
-          .items_center()
-          .justify_between()
-          .child(div().text_size(13).font_semibold().text_color(t.foreground).child("待办"))
-          .child(
-            button(
-              "＋",
-              t,
-              false,
-              () => run("mod.open", { name: "herdr-todo" }),
-            ),
-          ),
-      )
-      .child(
-        h_flex().gap(10).text_size(11).children([
-          div().text_color(t.foreground).child(`未处理 ${sum.pending}`),
-          div().text_color(sum.p0 ? (t.red ?? t.ansi1) : t.dim).child(`P0 ${sum.p0}`),
-          // 和底部「已完成 N」用同一个口径（done + cancelled），
-          // 否则同一件事在面板上出现两个不同的数。
-          div().text_color(t.dim).child(`完成 ${closed.length}`),
-        ]),
+      .children(
+        this.errorText()
+          ? [div().text_size(11).text_color(t.ansi1).child(this.errorText())]
+          : [],
       );
+  }
+
+  renderDetailWindow(cx) {
+    const t = theme();
+    const err = this.errorText();
+    const header = (title, body) =>
+      v_flex()
+        .px(12)
+        .pt(10)
+        .pb(8)
+        .gap(2)
+        .border_b(1)
+        .border_color(t.border)
+        .child(
+          h_flex()
+            .items_center()
+            .gap(8)
+            .child(div().flex_1().truncate().text_size(13).font_semibold().text_color(t.foreground).child(title))
+            .child(button("✕", t, false, () => closeOverlay(this.overlayId))),
+        )
+        .children(body ?? []);
+
+    if (!this.state && err) {
+      return this.detailFrame(t, [
+        header("待办详情"),
+        v_flex().p(12).gap(6)
+          .child(div().text_size(12).text_color(t.ansi1).child("数据读取失败"))
+          .child(div().text_size(11).text_color(t.muted).child(err)),
+      ]);
+    }
+    if (!this.state) {
+      return this.detailFrame(t, [
+        header("待办详情"),
+        v_flex().p(12).child(div().text_size(12).text_color(t.muted).child("载入中…")),
+      ]);
+    }
+
+    const item = this.detailId ? findItem(this.state, this.detailId) : null;
+    if (!item) {
+      // 只有删掉才会让 findItem 落空——归档只是打标记，事项还在。
+      // 说清楚，别显示一个空窗。
+      return this.detailFrame(t, [
+        header("待办详情"),
+        v_flex().p(12).child(div().text_size(12).text_color(t.muted).child("这条待办已不存在（可能刚被删除）。")),
+      ]);
+    }
+
+    return this.detailFrame(
+      t,
+      [
+        header(item.title, [
+          div().text_size(10).text_color(t.dim).child(`更新于 ${relTime(item.updated)}`),
+        ]),
+        v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(12).gap(8).children(
+          [
+            err ? div().text_size(11).text_color(t.ansi1).child(err) : null,
+            this.renderDetail(item, t, cx),
+          ].filter(Boolean),
+        ),
+      ],
+    );
   }
 
   /**
-   * 默认只展开当前 space；用户点过的组记在 expanded 里。
-   *
-   * 当前组与 fallback 组原先被硬性展开，点标题写进 expanded 却没人读——
-   * 用户看到的是「点了没反应」。现在用一个显式的「手动覆盖」集合：
-   * 点过的组以用户的意见为准，没点过才按默认规则。
+   * 详情窗的外框：每个分支都用它，因为键盘只有在**这条分支画出来的元素**上
+   * 才落得下去。载入中、读失败、事项不存在这几个态也必须是可聚焦的窗口——
+   * 否则 takeFocus() 重试到上限也拿不到键盘，用户只能靠 ✕ 关窗。
    */
-  isFolded(group, here, fallbackKey) {
-    if (this.override.has(group.key)) return !this.expanded.has(group.key);
-    if (group.key === here) return false;
-    if (group.key === fallbackKey) return false;
-    return !this.expanded.has(group.key);
-  }
-
-  /** 用户的点击总是覆盖默认规则。 */
-  toggleGroup(key, folded) {
-    this.override.add(key);
-    if (folded) this.expanded.add(key);
-    else this.expanded.delete(key);
-  }
-
-  renderGroupHeader(g, t, here, folded) {
-    const pending = g.items.filter((i) => !CLOSED_STATUSES.includes(i.status)).length;
-    const isCurrent = g.key === here;
-    const label =
-      g.kind === "unlinked"
-        ? "未关联"
-        : g.kind === "closed"
-          ? "space 已不存在"
-          : `${g.space?.machine ? `${g.space.machine}/` : ""}${g.label}`;
-    return h_flex()
-      .id(`grp-${g.key}`)
-      .px(10)
-      .pt(8)
-      .pb(3)
-      .gap(6)
-      .items_center()
-      .hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => {
-        this.toggleGroup(g.key, folded);
-        cx.notify();
-      })
-      .child(div().text_size(10).text_color(t.dim).child(folded ? "▸" : "▾"))
-      .child(
-        div()
-          .text_size(11)
-          .font_semibold()
-          .text_color(isCurrent ? t.foreground : g.kind === "closed" ? t.dim : t.muted)
-          .truncate()
-          .child(label),
-      )
-      .child(
-        div()
-          .text_size(10)
-          .text_color(pending && isCurrent ? t.foreground : t.dim)
-          .child(pending ? String(pending) : ""),
-      );
-  }
-
-  renderItemRow(it, t, cx, groupKey) {
-    const selected = it.id === this.selectedId;
-    return h_flex()
-      .id(`item-${it.id}-${groupKey}`)
-      .px(10)
-      .py(4)
-      .gap(7)
-      .items_center()
-      .when(selected, (el) => el.bg(t.selected))
-      .hover((s) => s.bg(selected ? t.selected : t.hover))
-      .on_click((_e, c) => {
-        this.selectedId = this.selectedId === it.id ? null : it.id;
-        c.notify();
-      })
-      .child(
-        div()
-          .w(14)
-          .text_size(12)
-          .text_color(statusColor(it.status, t))
-          .child(STATUS_GLYPH[it.status] ?? "?"),
-      )
-      .child(
-        div()
-          .w(22)
-          .text_size(10)
-          .font_semibold()
-          .text_color(priorityColor(it.priority, t))
-          .child(it.priority),
-      )
-      .child(
-        div()
-          .flex_1()
-          .truncate()
-          .text_size(12)
-          .text_color(CLOSED_STATUSES.includes(it.status) ? t.dim : t.foreground)
-          .child(it.title),
-      )
-      .child(div().text_size(10).text_color(t.dim).child(relTime(it.updated)));
-  }
-
-  renderClosedSection(closed, t, cx) {
-    if (!closed.length) return div();
-    return v_flex().children([
-      h_flex()
-        .id("closed-header")
-        .px(10)
-        .pt(10)
-        .pb(3)
-        .gap(6)
-        .items_center()
-        .hover((s) => s.bg(t.hover))
-        .on_click((_e, c) => {
-          this.showClosed = !this.showClosed;
-          c.notify();
-        })
-        .child(div().text_size(10).text_color(t.dim).child(this.showClosed ? "▾" : "▸"))
-        .child(div().text_size(11).text_color(t.dim).child(`已完成 ${closed.length}`)),
-      ...(this.showClosed ? closed.map((it) => this.renderItemRow(it, t, cx, "closed")) : []),
-    ]);
-  }
-
-  renderDetail(item, t, cx, known) {
-    const spaceNames = new Map(known.map((s) => [s.id, s.name]));
+  detailFrame(t, children) {
     return v_flex()
-      .flex_none()
-      .max_h(320)
-      .border_t(1)
-      .border_color(t.border)
-      .bg(t.raised)
-      .p(10)
-      .gap(6)
+      .size_full()
+      .bg(t.popover)
+      .rounded(10)
+      .track_focus(this.focusHandle)
+      .on_key_down((e) => {
+        if (e.key !== "escape") return;
+        // 先结束备注编辑再关窗：备注没保存就关掉会丢掉刚输入的内容。
+        if (this.noteEditingId) {
+          this.leaveNote();
+          return;
+        }
+        closeOverlay(this.overlayId);
+      })
+      .children(children);
+  }
+
+  renderDetail(item, t, cx) {
+    const spaceNames = new Map(currentSpaces().map((s) => [s.id, s.name]));
+    return v_flex()
+      .gap(8)
       .child(
-        h_flex().gap(8).items_center().child(
-          div().flex_1().text_size(12).font_semibold().text_color(t.foreground).truncate().child(item.title),
-        ),
-      )
-      .child(
-        h_flex().gap(6).items_center().children([
+        h_flex().gap(6).items_center().flex_wrap().children([
           div().text_size(10).text_color(t.dim).child("状态"),
           ...STATUSES.map((s) =>
             button(STATUS_LABEL[s], t, item.status === s, () => {
-              // 离开终态必须显式重开：面板里点就是明确意图。归档项点任意状态
+              // 离开终态必须显式重开：在这里点就是明确意图。归档项点任意状态
               // 也带 --reopen，否则会出现「状态改成了进行中却仍在归档里」的死结。
               const reopen =
                 !CLOSED_STATUSES.includes(s) &&
@@ -572,7 +474,7 @@ export default class Todo extends View {
         ]),
       )
       .child(
-        h_flex().gap(6).items_center().children([
+        h_flex().gap(6).items_center().flex_wrap().children([
           div().text_size(10).text_color(t.dim).child("优先级"),
           ...PRIORITIES.map((p) =>
             button(p, t, item.priority === p, () => this.mutate(["priority", item.id, p])),
@@ -591,31 +493,53 @@ export default class Todo extends View {
                 .rounded(4)
                 .bg(t.hover)
                 .child(div().text_size(10).text_color(t.muted).child(spaceNames.get(sid) ?? sid))
-                .child(
-                  button("×", t, false, () => this.removeSpace(item, sid)),
-                ),
+                .child(button("×", t, false, () => this.removeSpace(item, sid))),
             ),
+            // agent 关联与 space 关联互斥（core 强制），所以两者不会同时非空；
+            // 这里照样分开画，是为了让「这条挂在哪」一眼能读出来。
+            ...(item.agent
+              ? [
+                  h_flex()
+                    .gap(3)
+                    .items_center()
+                    .px(5)
+                    .rounded(4)
+                    .bg(t.hover)
+                    .child(
+                      div()
+                        .text_size(10)
+                        .text_color(t.muted)
+                        .child(`agent ${agentName(item.agent.address)}`),
+                    )
+                    .child(
+                      button("×", t, false, () =>
+                        this.mutate(["agent", item.id], { flags: ["--clear"] }),
+                      ),
+                    ),
+                ]
+              : []),
+            ...(item.spaces.length || item.agent
+              ? []
+              : [div().text_size(10).text_color(t.dim).child("（未关联）")]),
           ]),
           h_flex().gap(4).flex_wrap().children([
             div().text_size(10).text_color(t.dim).child("加到"),
-            ...known
+            ...currentSpaces()
               .filter((s) => !item.spaces.includes(s.id))
               .map((s) =>
-                button(
-                  `${s.machine ? `${s.machine}/` : ""}${s.name}`,
-                  t,
-                  false,
-                  () => this.addSpace(item, s.id),
-                ),
+                button(`${s.machine ? `${s.machine}/` : ""}${s.name}`, t, false, () => this.addSpace(item, s.id)),
               ),
-            ...(known.some((s) => !item.spaces.includes(s.id))
-              ? []
+            // 挂着 agent 时说明清楚：点任一 space 会顶掉 agent 关联（互斥）。
+            ...(currentSpaces().some((s) => !item.spaces.includes(s.id))
+              ? item.agent
+                ? [div().text_size(10).text_color(t.dim).child("（挂到 space 会解除 agent 关联）")]
+                : []
               : [div().text_size(10).text_color(t.dim).child("（所有 space 都关联了）")]),
           ]),
         ]),
       )
       .child(
-        h_flex().gap(6).items_center().children([
+        h_flex().gap(6).items_center().flex_wrap().children([
           div().text_size(10).text_color(t.dim).child("归档"),
           item.archived != null
             ? button("取消归档", t, true, () => this.mutate(["unarchive", item.id]))
@@ -630,20 +554,17 @@ export default class Todo extends View {
       .child(this.renderTimeline(item, t));
   }
 
-  renderNoteEditor(item, t, cx) {
+  renderNoteEditor(item, t) {
     const editing = this.noteEditingId === item.id;
     if (editing && this.noteDraft) {
       return v_flex()
         .gap(4)
-        .child(div().h(64).child(Textarea.new(this.noteDraft)))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .child(div().h(80).child(Textarea.new(this.noteDraft)))
         .child(
           h_flex().gap(6).items_center().children([
             button("保存", t, true, () => this.commitNote(item.id)),
-            button("取消", t, false, () => {
-              this.noteEditingId = null;
-              this.noteDraft = null;
-              this.cx.notify();
-            }),
+            button("取消", t, false, () => this.leaveNote()),
           ]),
         );
     }
@@ -653,17 +574,17 @@ export default class Todo extends View {
       .child(
         div()
           .flex_1()
+          .truncate()
           .text_size(11)
           .text_color(item.note ? t.muted : t.dim)
-          .truncate()
           .child(item.note ? item.note.split("\n")[0] : "（无备注）"),
       )
       .child(
         button("编辑备注", t, false, () => {
           // 状态在这里建：InputState/TextareaState.new 需要一次宿主调用，
-          // 不能在 render 里做（宿主会直接抛错，整个面板渲染失败）。
+          // 不能在 render 里做（宿主会直接抛错，整个窗口渲染失败）。
           this.noteEditingId = item.id;
-          this.noteDraft = TextareaState.new({ value: item.note ?? "", rows: 3 });
+          this.noteDraft = TextareaState.new({ value: item.note ?? "", rows: 4 });
           this.noteDraft.on("submit", () => this.commitNote(item.id));
           this.noteDraft.focus();
           this.cx.notify();
@@ -681,10 +602,7 @@ export default class Todo extends View {
     // 作为位置参数会被当成选项语法。
     this.mutate(["note", id], {
       flags: [`--note=${text}`],
-      onDone: () => {
-        this.noteEditingId = null;
-        this.noteDraft = null;
-      },
+      onDone: () => this.leaveNote(),
     });
   }
 
@@ -705,8 +623,9 @@ export default class Todo extends View {
 }
 
 // 按钮的回调不接 cx：异步任务统一走 this.spawn（见上面的说明）。
-// id 用「标签 + 序号」而不是随机数：随机 id 每次渲染都变，元素身份不稳定，
-// 命中测试与 UI 自动化都没法按 id 定位同一个按钮。
+// id 用「标签 + 本次渲染内的序号」而不是随机数：随机 id 每次渲染都变，元素身份
+// 不稳定，命中测试与 UI 自动化都没法按 id 定位同一个按钮。序号在 render()
+// 开头归零，所以同一份状态下渲染出的 id 逐次一致。
 let buttonSeq = 0;
 function button(label, t, active, onClick) {
   buttonSeq += 1;
@@ -717,14 +636,9 @@ function button(label, t, active, onClick) {
     .rounded(4)
     .bg(active ? t.accent : t.hover)
     .hover((s) => s.bg(active ? t.accent : t.selected))
+    // window 形态的拖动由任意未被阻止的按下发起（herdr.d.ts）。不拦住按下，
+    // 点按钮会变成拖窗口，点击本身反而收不到。
+    .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
     .on_click(() => onClick())
     .child(div().text_size(10).text_color(active ? t.accent_foreground : t.muted).child(label));
-}
-
-function focusedSpaceId() {
-  try {
-    return focused()?.space ?? null;
-  } catch {
-    return null;
-  }
 }
