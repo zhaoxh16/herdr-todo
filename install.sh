@@ -42,31 +42,54 @@ backup() {
   say "    已备份 $(basename "$1") → $(basename "$1").bak-$_stamp"
 }
 
+# ---------- 安装清单：「要装哪些 mod、每个 mod 有哪些文件」只写这一份 ----------
+# 前置检查、拷贝、替换全部由它派生。上一版把清单手写了两遍（检查一遍、拷贝一遍），
+# 加新 mod 时只改了拷贝那份，于是删掉一个文件就能让安装「检查通过、装到一半失败」，
+# 留下布局已指向、目录却残缺的半装状态。
+# 每行：<安装目录名>|<仓库内源目录>|<文件，空格分隔>|<人话说明>
+MOD_MANIFEST='
+herdr-todo|.|main.js store.js core.js mod.json todo.svg|详情窗与快速记录窗
+spaces-todo|spaces|main.js mod.json store.js core.js todo-view.js todo-drag.js jsconfig.json|左侧侧栏里的待办行
+agents-todo|agents|main.js mod.json store.js core.js todo-view.js todo-drag.js jsconfig.json|Agents 栏里每个 agent 的待办行
+tabs-todo|tabs|main.js mod.json codebuddy.js jsconfig.json|标签栏里的 CodeBuddy 按钮
+menu-todo|menu|main.js mod.json codebuddy.js jsconfig.json|space 右键菜单
+'
+
+# 按清单逐行回调：fn <安装目录名> <源目录> <文件（空格分隔）> <说明>
+each_mod() {
+  while IFS='|' read -r _m_name _m_src _m_files _m_desc; do
+    [ -n "${_m_name:-}" ] || continue
+    "$1" "$_m_name" "$_m_src" "$_m_files" "$_m_desc"
+  done <<EOF
+$MOD_MANIFEST
+EOF
+}
+
 # ---------- 前置检查：全部通过才开始改动任何东西 ----------
 # 文件缺失是安装环境问题，不是「装到一半失败」——等步骤 4 才发现时，CLI 和
 # mod 目录已经被改过，用户拿到的是半装状态。
 [ -f "$ROOT/src/core.js" ] || die "找不到 $ROOT/src/core.js，请在仓库目录内运行"
 [ -f "$ROOT/bin/herdr-todo" ] || die "找不到 $ROOT/bin/herdr-todo"
-[ -f "$ROOT/mod/main.js" ] || die "缺少 $ROOT/mod/main.js"
-[ -f "$ROOT/mod/store.js" ] || die "缺少 $ROOT/mod/store.js"
-[ -f "$ROOT/mod/mod.json" ] || die "缺少 $ROOT/mod/mod.json"
-[ -f "$ROOT/mod/todo.svg" ] || die "缺少 $ROOT/mod/todo.svg"
-[ -f "$ROOT/mod/spaces/mod.json" ] || die "缺少 $ROOT/mod/spaces/mod.json（侧栏待办要用）"
-[ -f "$ROOT/mod/spaces/main.js" ] || die "缺少 $ROOT/mod/spaces/main.js"
-[ -f "$ROOT/mod/spaces/todo-view.js" ] || die "缺少 $ROOT/mod/spaces/todo-view.js"
-[ -f "$ROOT/mod/todo-drag.js" ] || die "缺少 $ROOT/mod/todo-drag.js（拖拽契约要用）"
-[ -f "$ROOT/mod/spaces/jsconfig.json" ] || die "缺少 $ROOT/mod/spaces/jsconfig.json"
-[ -f "$ROOT/mod/agents/mod.json" ] || die "缺少 $ROOT/mod/agents/mod.json（Agents 栏待办要用）"
-[ -f "$ROOT/mod/agents/main.js" ] || die "缺少 $ROOT/mod/agents/main.js"
-[ -f "$ROOT/mod/agents/todo-view.js" ] || die "缺少 $ROOT/mod/agents/todo-view.js"
-[ -f "$ROOT/mod/agents/jsconfig.json" ] || die "缺少 $ROOT/mod/agents/jsconfig.json"
 [ -f "$ROOT/scripts/install-layout.py" ] || die "缺少 $ROOT/scripts/install-layout.py"
 [ -f "$ROOT/scripts/install-keys.py" ] || die "缺少 $ROOT/scripts/install-keys.py"
+# 上面这份清单里的每个文件都得先在仓库里存在。与拷贝共用 MOD_MANIFEST，不维护第二份。
+check_mod() {
+  for _c_f in $3; do
+    [ -f "$ROOT/mod/$2/$_c_f" ] || die "缺少 $ROOT/mod/$2/${_c_f}（$1 要用）"
+  done
+}
+each_mod check_mod
+unset -f check_mod
 command -v node >/dev/null 2>&1 || die "需要 node（>=18），未找到"
 command -v python3 >/dev/null 2>&1 || die "需要 python3，未找到"
 [ -d "$APP_HOME" ] || die "找不到 ${APP_HOME}；请先安装并运行过 Herdr App"
 [ -f "$APP_HOME/layouts/main.json" ] || die "找不到 $APP_HOME/layouts/main.json；请先运行一次 Herdr App 让它生成默认布局"
 [ -f "$APP_HOME/keys.json" ] || warn "警告：没有 $APP_HOME/keys.json，最后一步的快捷键会跳过"
+
+# 暂存目录在 $APP_HOME 下（与 mods/ 同一文件系统，rename 才是原子的），
+# 失败时统一清掉，不把半成品留在用户目录里。
+STAGE="$APP_HOME/.install-stage.$$"
+trap 'rm -rf "$STAGE" 2>/dev/null || true' EXIT
 
 say "1/5 同步共享核心到 mod/"
 sh "$ROOT/scripts/sync-core.sh"
@@ -83,65 +106,69 @@ chmod +x "$ROOT/bin/herdr-todo"
 ln -sfn "$ROOT/bin/herdr-todo" "$TARGET"
 say "    $TARGET -> $ROOT/bin/herdr-todo"
 
-say "3/5 安装 mod 到 $APP_HOME/mods/$MOD_NAME"
-MOD_DIR="$APP_HOME/mods/$MOD_NAME"
-mkdir -p "$MOD_DIR"
-for f in main.js store.js core.js mod.json todo.svg; do
-  backup "$MOD_DIR/$f"
-  cp "$ROOT/mod/$f" "$MOD_DIR/$f" || die "复制 $f 失败"
-done
-say "    已复制 5 个文件（详情窗与快速记录窗）"
+say "3/5 安装 mod 到 $APP_HOME/mods"
+# 每个 mod 都先在暂存目录里装完整，再用一次 rename 换上去。
+# 逐文件 cp 进在用目录时，中途失败会留下「main.js 已引用 ./codebuddy.js、而它缺失」
+# 的目录；布局正指向这些 mod，App 又对 mods/<name>/ 热重载，结果就是标签栏或侧栏
+# 整体加载失败。目标位置是目录时 cp 甚至会退出 0 —— 装完照样坏。
+rm -rf "$STAGE"
+mkdir -p "$STAGE" || die "创建暂存目录 $STAGE 失败"
 
-# 待办列表住在左侧侧栏：克隆 App 自带的 spaces，并在末尾追加待办行。
-# 沙箱禁止跨目录 import，所以 store.js / core.js / todo-view.js 都要同目录一份。
-SIDEBAR_DIR="$APP_HOME/mods/spaces-todo"
-mkdir -p "$SIDEBAR_DIR"
-for f in main.js mod.json store.js core.js todo-view.js todo-drag.js jsconfig.json; do
-  backup "$SIDEBAR_DIR/$f"
-  cp "$ROOT/mod/spaces/$f" "$SIDEBAR_DIR/$f" || die "复制 spaces-todo/$f 失败"
-done
-say "    已安装 spaces-todo（左侧侧栏里的待办行）"
+# 先在暂存区把每个 mod 装齐：源文件缺一个、cp 失败，都在碰在用目录之前中止。
+stage_mod() {
+  _s_name=$1 _s_src=$2 _s_files=$3
+  _s_dir="$STAGE/$_s_name"
+  mkdir -p "$_s_dir"
+  for _s_f in $_s_files; do
+    cp "$ROOT/mod/$_s_src/$_s_f" "$_s_dir/$_s_f" || die "暂存 $_s_name/$_s_f 失败，已中止（在用目录未改动）"
+    # cp 到同名目录会把源拷进去并返回 0；暂存目录是新建的，正常不会发生，
+    # 但保持这条断言，免得将来有人改了暂存方式却以为还是原子的。
+    [ -f "$_s_dir/$_s_f" ] || die "暂存后的 $_s_name/$_s_f 不是普通文件"
+  done
+}
+each_mod stage_mod
+unset -f stage_mod
 
-# Agents 栏同理：克隆自带的 agents，在每个 agent 行下面追加关联到它的待办。
-AGENTS_DIR="$APP_HOME/mods/agents-todo"
-mkdir -p "$AGENTS_DIR"
-for f in main.js mod.json store.js core.js todo-view.js todo-drag.js jsconfig.json; do
-  backup "$AGENTS_DIR/$f"
-  cp "$ROOT/mod/agents/$f" "$AGENTS_DIR/$f" || die "复制 agents-todo/$f 失败"
-done
-say "    已安装 agents-todo（Agents 栏里每个 agent 的待办行）"
+mkdir -p "$APP_HOME/mods"
+install_mod() {
+  _i_name=$1 _i_files=$3 _i_desc=$4
+  _i_src="$STAGE/$_i_name"
+  _i_dst="$APP_HOME/mods/$_i_name"
+  _i_old="" # POSIX sh 没有 local：每轮清空，免得失败信息引用上一轮的备份路径
+  # 旧目录整个挪进 backups/：既是本次的备份，也让新目录能一次性整体就位。
+  # 用整目录而不是逐文件 `.bak`，因为逐文件备份在「整体替换」下会被一起换走。
+  if [ -e "$_i_dst" ] || [ -L "$_i_dst" ]; then
+    mkdir -p "$APP_HOME/backups" || die "创建 $APP_HOME/backups 失败"
+    _i_old="$APP_HOME/backups/$_i_name.bak-$(stamp "$APP_HOME/backups/$_i_name")"
+    mv "$_i_dst" "$_i_old" || die "备份 $_i_name 失败，已中止（$APP_HOME/mods 未改动）"
+    say "    已备份 $_i_name → backups/$(basename "$_i_old")"
+  fi
+  mv "$_i_src" "$_i_dst" || die "替换 $_i_name 失败：新目录无法就位（旧目录在 $(basename "${_i_old:-无}")）"
+  # 就位后核对：目录存在、清单里的文件都在。这一步挡住「看起来装好了其实是半个」。
+  for _i_f in $_i_files; do
+    [ -f "$_i_dst/$_i_f" ] || die "安装 $_i_name 后缺少 ${_i_f}（旧目录在 backups/）"
+  done
+  say "    已安装 ${_i_name}（${_i_desc}）"
+}
+each_mod install_mod
+unset -f install_mod
+rm -rf "$STAGE"
 
-# 旧版本把 Todo 放在 tab bar 上的克隆件里（mods/tabs-todo + 旧布局里 `tabs` 指向它）。
-# 顺序要紧：先让第 4 步把布局改成指向自带 tabs 并成功落盘，再删这个 mod。
-# 反过来做的话，布局生成失败时用户剩下的是一份「指向已删除 mod」的布局，
-# 重启 App 就少了 tab bar——那正是 die 想要的「不留下半装状态」的反面。
-# 这里只记录它是否存在，真正的移除在第 4 步之后。
-OLD_TABS_DIR=""
-if [ -d "$APP_HOME/mods/tabs-todo" ]; then
-  OLD_TABS_DIR="$APP_HOME/mods/tabs-todo"
-fi
+# 历史上（v0.1 的 tabs-todo）标签栏克隆件曾被移除，改回自带 tabs。
+# 现在 tabs-todo 又回来了，但含义完全不同：它只多一个 CodeBuddy 按钮，
+# 布局也明确指向它。所以**不能**再自动移除它——那会把刚装好的 mod 删掉，
+# 布局就指向一个不存在的 mod。旧版本留下的 `tabs-todo.bak-<戳>` 备份仍按
+# 「mods/ 里不留备份」的规矩挪到 backups/（见下面的循环）。
 
 say "4/5 生成布局 $APP_HOME/layouts/herdr-todo.json"
 # 这份布局用户可能手工调过（面板宽度、默认面板），install-layout.py 自己
 # 负责先备份再覆盖。
 HERDR_APP_HOME="$APP_HOME" python3 "$ROOT/scripts/install-layout.py" || die "布局生成失败"
 
-# 布局已经指向自带 tabs 了，现在才能安全地移走旧 mod。
-# 不能备份到 mods/ 里面：App 会把该目录下每个文件夹都当作一个 mod 加载，
-# 备份目录会变成「一个已废弃的 mod」被扫描。挪到 backups/ 下。
-if [ -n "$OLD_TABS_DIR" ]; then
-  BACKUP_DIR="$APP_HOME/backups"
-  mkdir -p "$BACKUP_DIR" || die "创建 $BACKUP_DIR 失败"
-  _stamp=$(stamp "$BACKUP_DIR/tabs-todo")
-  mv "$OLD_TABS_DIR" "$BACKUP_DIR/tabs-todo.bak-$_stamp" \
-    || die "移除旧 tabs-todo 失败（布局已经改好，可以手工删除 ${OLD_TABS_DIR}）"
-  say "    已移除旧版 tabs-todo（备份在 $BACKUP_DIR/tabs-todo.bak-${_stamp}）"
-fi
-
 # 更早的安装脚本把旧 mod 的备份直接放在 mods/ 里（`tabs-todo.bak-<戳>`）。
 # mods/ 下每个文件夹都会被当作 mod 加载，这些备份同样要挪走。
 # 只认本项目的名字前缀，不碰用户自己的 mod。
-for _old in "$APP_HOME/mods"/tabs-todo.bak-* "$APP_HOME/mods"/herdr-todo.bak-* "$APP_HOME/mods"/spaces-todo.bak-* "$APP_HOME/mods"/agents-todo.bak-*; do
+for _old in "$APP_HOME/mods"/tabs-todo.bak-* "$APP_HOME/mods"/menu-todo.bak-* "$APP_HOME/mods"/herdr-todo.bak-* "$APP_HOME/mods"/spaces-todo.bak-* "$APP_HOME/mods"/agents-todo.bak-*; do
   [ -e "$_old" ] || continue
   BACKUP_DIR="$APP_HOME/backups"
   mkdir -p "$BACKUP_DIR" || die "创建 $BACKUP_DIR 失败"
@@ -167,9 +194,11 @@ else
 fi
 say ""
 say "下一步："
-say "  herdr-app check $MOD_DIR          # 校验详情窗能加载"
-say "  herdr-app check $SIDEBAR_DIR      # 校验侧栏待办能加载"
-say "  herdr-app check $AGENTS_DIR       # 校验 Agents 栏待办能加载"
+say "  herdr-app check $APP_HOME/mods/$MOD_NAME      # 校验详情窗能加载"
+say "  herdr-app check $APP_HOME/mods/spaces-todo    # 校验侧栏待办能加载"
+say "  herdr-app check $APP_HOME/mods/agents-todo    # 校验 Agents 栏待办能加载"
+say "  herdr-app check $APP_HOME/mods/tabs-todo      # 校验标签栏 CodeBuddy 按钮能加载"
+say "  herdr-app check $APP_HOME/mods/menu-todo      # 校验 space 右键菜单能加载"
 say "  herdr-app do layout.switch --name herdr-todo   # 切到带待办面板的布局"
 say ""
 say "数据文件：$HOME_DIR/.local/share/herdr-todo/todos.json"

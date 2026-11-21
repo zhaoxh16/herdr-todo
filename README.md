@@ -26,16 +26,24 @@
 ./install.sh
 ```
 
-它会做五件事：把共享数据逻辑同步进三个 mod（mod 沙箱禁止跨目录 import）、把 `herdr-todo`
-链到 `~/.local/bin`、把详情窗 mod 与两个克隆件 `spaces-todo` / `agents-todo` 复制进 Herdr App、
-生成一份指向它们的布局、把快捷键写进 `keys.json`。
+它会做五件事：把共享数据逻辑同步进各 mod（mod 沙箱禁止跨目录 import）、把 `herdr-todo`
+链到 `~/.local/bin`、把详情窗 mod 与四个克隆件（`spaces-todo` / `agents-todo` / `tabs-todo` /
+`menu-todo`）复制进 Herdr App、生成一份指向它们的布局、把快捷键写进 `keys.json`。
 
-重复执行是安全的：**每一次覆盖都会先备份**（文件名带 `.bak-<日期>-<毫秒>`），包括
-`layouts/herdr-todo.json`——你可能手工调过侧栏宽度或布局。备份失败会中止安装，不会「以为备份了」。
+重复执行是安全的：**每一次覆盖都会先备份**，mod 目录整份挪进 `backups/<名字>.bak-<时间戳>`，
+`layouts/herdr-todo.json` 与 `keys.json` 各自先存一份 `.bak-<时间戳>`。备份失败会中止安装，
+不会「以为备份了」。
+
+安装是**整体替换**：每个 mod 先在 `$APP_HOME/.install-stage.<pid>` 里装完整，再验一遍文件齐全，
+最后整目录换上去。中途失败时正在用的 mod 不受影响，暂存目录由 `trap` 清掉——
+不会出现「`main.js` 已引用 `./codebuddy.js`、而它还没拷到」这种布局指向半个 mod 的状态。
+
+「要装哪些 mod、每个 mod 有哪些文件」在 `install.sh` 里只有一份清单（`MOD_MANIFEST`），
+前置检查、暂存、替换、就位后核对全部从它派生；`npm test` 会校验清单里的文件都真实存在。
 
 前置要求：`node`（≥ 18）与 `python3`，以及**已经安装并运行过 Herdr App**（脚本要往
 `~/.config/herdr-app` 里写文件，并且需要 App 生成的 `layouts/main.json` 与 `keys.json`）。
-所有输入在改动任何文件之前统一检查，缺一项就直接退出，不会留下半装状态。
+所有输入（含清单里的每个 mod 文件）在改动任何文件之前统一检查，缺一项就直接退出，不会留下半装状态。
 
 装完检查并切换布局：
 
@@ -43,6 +51,8 @@
 herdr-app check ~/.config/herdr-app/mods/herdr-todo
 herdr-app check ~/.config/herdr-app/mods/spaces-todo
 herdr-app check ~/.config/herdr-app/mods/agents-todo
+herdr-app check ~/.config/herdr-app/mods/tabs-todo
+herdr-app check ~/.config/herdr-app/mods/menu-todo
 herdr-app do layout.switch --name herdr-todo
 ```
 
@@ -114,6 +124,26 @@ agent 被关闭（终端结束）后，它的事项自动回退到**关联当时
 space 上。要挂到某个 space，用那个 space 行上的 ＋。
 
 快速记录窗是 dialog：回车创建、Esc 关闭，右上角也有 ✕。
+
+### 用 CodeBuddy 打开
+
+标签栏右侧有一个 `CodeBuddy` 按钮，space 行右键菜单里也有一条「用 CodeBuddy 打开」。
+两者打开的都是**那个 space 的目录**：它第一个终端当前的 cwd；这个 space 还没有终端时用
+创建时记录的目录。切 tab、切 pane 不会改变按钮指向的目录。
+
+- 本机 space → 本机 CodeBuddy 窗口，打开那个目录。
+- 远程 space（dev3–dev8 这类）→ CodeBuddy 的 Remote-SSH 窗口，标题形如
+  `SQLEngine [SSH: dev8]`。
+
+菜单作用于**被右键的那个** space，不要求它是当前活动的那个。没有目录可开时按钮仍然显示，
+tooltip 说明原因，点击不动作——不会静默什么都不发生。
+
+远程窗口首次连接要在那台机器上准备 CodeBuddy Server，会慢一些，偶尔会失败一次并弹出
+错误通知；再点一次即可。打开动作进行中时连点会被忽略，不会开出一串窗口。
+
+路径里的 `#`、`?` 与空格会按 URI 规则逐段编码，所以 worktree 目录名带 `#`（如 `fix#42`）
+也能打开正确的那一个，而不是被 URI 解析截断成父目录。space 的目录是空字符串时
+（Herdr 把它定义为「那台机器的 home」），本机打开 `$HOME`，远程打开该机器的 home。
 
 ### 命令行
 
@@ -231,6 +261,23 @@ sh scripts/sync-core.sh      # 改完 src/core.js / todo-view.js / todo-drag.js 
 那组行里，而组装那组行的 `withKids` 是 render 内部的局部函数，外面拿不到。所以上游
 正文里有 2 行标了 `[herdr-todo]` 的插入，重新克隆时要一并贴回。
 
+`tabs-todo` 与 `menu-todo` 也是克隆件，只为了 `CodeBuddy` 按钮与那条菜单项：
+`tabs-todo` 在文件末尾包装 `Tabs.prototype.render` 往标签栏尾部追加按钮，
+`menu-todo` 在 `items()` 的 `space` 分支里多一条。两者共用同一份 `codebuddy.js`
+（打开动作的唯一实现），由 `scripts/sync-core.sh` 复制，`npm test` 比对——它一旦分叉，
+就会出现「按钮开对目录、菜单开错目录」这种两边单独看都正常的半边坏。
+
+**这两个克隆件的非上游改动全部带 `[herdr-todo]` 标记**（`grep -n 'herdr-todo]' mod/tabs/main.js
+mod/menu/main.js`）。`menu-todo` 因为上游正文里没有可依赖的空位，改动是内联的 4 处：import、
+菜单项、`menuIcon()` 的图标分支、`choose()` 里取 `target` 与分发。重新克隆后按这 4 处贴回；
+`npm test` 会检查这些位置还在，并把「整份重新克隆导致功能静默消失」判为失败。
+
+`spaces-todo` 另有一处不得不改：上游 `mods/spaces` 打开右键菜单时写死了 `{mod: "menu"}`，
+`spaces-todo` 改成优选用 `menu-todo`、并用 `probeMenuTodo()` 在启动时确认它真的装着——
+`openOverlay` 指向不存在的 mod 不报错、也不显示任何东西，没有这个回退时，`menu-todo`
+一旦缺失，space 的整份右键菜单（重命名/关闭/worktree 全部）会一起静默失效。重新克隆
+`spaces-todo` 时这段同样要贴回。
+
 两个克隆件的 `core.js` / `store.js`（以及 `todo-view.js`、`todo-drag.js`）都由
 `scripts/sync-core.sh` 生成副本，`npm test` 会比对内容——这几个文件分叉是最隐蔽的一种
 漂移：`todo-view.js` 分叉会让侧栏与 Agents 栏用两套「这条该显示在哪」的算法，各自看起来
@@ -263,3 +310,12 @@ sh scripts/sync-core.sh      # 改完 src/core.js / todo-view.js / todo-drag.js 
 - `spaces-todo` 依赖 App 自带 `spaces` 的内部结构（`row` 返回一条 space 行、
   `grouped` 返回侧栏列表的直接子元素）。App 升级后若待办行错位或消失，按上面
   「侧栏克隆件」一节重新克隆并重贴末尾的待办扩展段。
+- 远程 CodeBuddy 窗口靠 `~/.ssh/config` 里的机器别名（`dev8` 这类）连接，并且用
+  `vscode-remote://codebuddy-remote-ssh+<别名><路径>` 这个写法打开。后者是 CodeBuddy
+  内置 remote-ssh 扩展的内部约定，不是公开接口；升级后若远程窗口打不开，先看
+  `mod/codebuddy.js` 里的 `REMOTE_AUTHORITY` 常量。
+- 打开 CodeBuddy 用的是 bundle 内的 CLI（`/Applications/CodeBuddy CN.app/.../bin/code`），
+  不读 `PATH`。CodeBuddy 换安装位置时需要改 `mod/codebuddy.js` 的 `CODEBUDDY_CLI`。
+- 没有目录时按钮置灰；`space.folder` 为空字符串不算「没有目录」（那是机器的 home）。
+- `tabs-todo` 的按钮画在标签栏最右侧；在 Linux/Windows 上（App 自己画窗口按钮时）它会排在
+  最小化/最大化/关闭之后。macOS 上窗口按钮由系统画，位置与设计一致。

@@ -1,7 +1,7 @@
 {
-  "task": "todo-sidebar",
-  "task_dir": ".agent/todo-sidebar",
-  "plan_path": ".agent/todo-sidebar/plan.md",
-  "updated_by": "planning",
-  "updated_at": "2026-11-19T13:40:00+08:00"
+  "task": "codebuddy-open",
+  "task_dir": ".agent/codebuddy-open",
+  "plan_path": ".agent/codebuddy-open/plan.md",
+  "updated_by": "execute-plan",
+  "updated_at": "2026-11-20T18:45:03+08:00"
 }

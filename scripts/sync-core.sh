@@ -51,4 +51,12 @@ cp "$SIDEBAR_DIR/todo-view.js" "$AGENTS_DIR/todo-view.js"
 cp "$ROOT/mod/todo-drag.js" "$SIDEBAR_DIR/todo-drag.js"
 cp "$ROOT/mod/todo-drag.js" "$AGENTS_DIR/todo-drag.js"
 
-echo "synced mod/core.js + mod/spaces/{core,store}.js + mod/agents/{core,store,todo-view}.js (sha256 $(echo "$HASH" | cut -c1-12)…)"
+# 「用 CodeBuddy 打开」同理：标签栏按钮与 space 右键菜单各持一份副本。
+# 分叉的话会出现「按钮开对目录、菜单开错目录」这种半边坏，而且两边都看着正常。
+TABS_DIR="$ROOT/mod/tabs"
+MENU_DIR="$ROOT/mod/menu"
+mkdir -p "$TABS_DIR" "$MENU_DIR"
+cp "$ROOT/mod/codebuddy.js" "$TABS_DIR/codebuddy.js"
+cp "$ROOT/mod/codebuddy.js" "$MENU_DIR/codebuddy.js"
+
+echo "synced mod/core.js + mod/spaces/{core,store}.js + mod/agents/{core,store,todo-view}.js + mod/{tabs,menu}/codebuddy.js (sha256 $(echo "$HASH" | cut -c1-12)…)"

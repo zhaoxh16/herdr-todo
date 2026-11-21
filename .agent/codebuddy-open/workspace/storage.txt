@@ -1,0 +1,14 @@
+# CodeBuddy 的 workspaceStorage：每打开一个目录，它的目录下会写 state.vscdb。
+# workspace.json 的 mtime 是该 workspace 首次创建的时间，不用于判定本次打开；
+# 这里报告 state.vscdb 的最后写入时间，即最近一次打开/使用该窗口的时刻。
+
+OK   file:///Users/zxh/.local/share/herdr-todo
+     state.vscdb 最后写入 2026-11-20 12:05:41 · 本机按钮（活动 space = 本机 herdr-todo）
+
+OK   vscode-remote://codebuddy-remote-ssh%2Bdev8/data/workspace/SQLEngine
+     state.vscdb 最后写入 2026-11-20 12:54:57 · 远程按钮（活动 space = dev8）
+
+OK   vscode-remote://codebuddy-remote-ssh%2Bdev6/data/workspace/SQLEngine
+     state.vscdb 最后写入 2026-11-20 12:40:24 · 右键菜单（活动 space 是本机，右键的是 dev6 行）
+
+# 记于 2026-11-20 13:00:44

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """把待办接进一份独立的布局文件（克隆自 App 自带的 main）。
 
-待办列表住在左侧 Spaces 侧栏里，所以这里只做一件事：把侧栏的 `spaces` 块
-指向本项目的克隆件 `spaces-todo`（它在原生 Spaces 之上追加每个 space 的待办行）。
-右侧 panel-body 与 tab bar 都保持 App 原样——待办不再占用右侧面板。
+待办列表住在左侧 Spaces 侧栏里，所以布局侧做三件事：把侧栏的 `spaces` 块与
+`agents` 块指向本项目的克隆件 `spaces-todo` / `agents-todo`，把标签栏 `tabs`
+指向 `tabs-todo`（多了「用 CodeBuddy 打开」按钮）。
 
 不改 main.json 本身：Herdr 每次启动都会用自带版本覆盖 main，
 所以必须另存一个布局，用户的改动才能留住。
@@ -20,6 +20,7 @@ SRC = os.path.join(APP_HOME, "layouts", "main.json")
 DST = os.path.join(APP_HOME, "layouts", "herdr-todo.json")
 MOD = "spaces-todo"
 AGENTS_MOD = "agents-todo"
+TABS_MOD = "tabs-todo"
 
 
 def find(node, node_id):
@@ -47,6 +48,14 @@ def main():
         print("main 布局结构变了：找不到侧栏 spaces 块", file=sys.stderr)
         return 1
     spaces_block.setdefault("content", {})["mod"] = MOD
+
+    # 标签栏：换成带 CodeBuddy 按钮的克隆件。找不到不失败——用户可能删掉了
+    # 标签栏那一行；这时按钮只在 space 右键菜单里，照常能用。
+    tabs_block = find(layout, "tabs")
+    if tabs_block is not None:
+        tabs_block.setdefault("content", {})["mod"] = TABS_MOD
+    else:
+        print("提示：布局里没有 tabs 块，CodeBuddy 按钮不会出现（右键菜单仍可用）")
 
     # Agents 栏同理：它是 App 自带 mod，要显示待办必须换成克隆件。
     # 找不到不算失败——用户可能自己删掉了 Agents 块，那种情况下没有地方

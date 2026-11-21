@@ -1,0 +1,656 @@
+
+> herdr-todo@0.1.0 test
+> node --test tests/*.test.js
+
+TAP version 13
+# Subtest: 面板 argv：自己的选项在前，-- 隔开位置参数
+ok 1 - 面板 argv：自己的选项在前，-- 隔开位置参数
+  ---
+  duration_ms: 10.652916
+  type: 'test'
+  ...
+# Subtest: 空间目录：取第一个 tab 里有 cwd 的 pane，切 pane 不改变结果
+ok 2 - 空间目录：取第一个 tab 里有 cwd 的 pane，切 pane 不改变结果
+  ---
+  duration_ms: 9.946
+  type: 'test'
+  ...
+# Subtest: 本机 space：直接传目录，不加 --folder-uri
+ok 3 - 本机 space：直接传目录，不加 --folder-uri
+  ---
+  duration_ms: 9.325209
+  type: 'test'
+  ...
+# Subtest: 远程 space：用 remote-ssh 的 folder-uri，带机器名与原路径
+ok 4 - 远程 space：用 remote-ssh 的 folder-uri，带机器名与原路径
+  ---
+  duration_ms: 5.338084
+  type: 'test'
+  ...
+# Subtest: 远程路径里的空格与非 ASCII 被编码，不会拆坏 URI
+ok 5 - 远程路径里的空格与非 ASCII 被编码，不会拆坏 URI
+  ---
+  duration_ms: 6.9925
+  type: 'test'
+  ...
+# Subtest: 远程路径里的 \# 与 ? 被编码，不会被当成 fragment / query
+ok 6 - 远程路径里的 \# 与 ? 被编码，不会被当成 fragment / query
+  ---
+  duration_ms: 5.13725
+  type: 'test'
+  ...
+# Subtest: 没有目录：不发请求，给出说明用的通知
+ok 7 - 没有目录：不发请求，给出说明用的通知
+  ---
+  duration_ms: 9.4005
+  type: 'test'
+  ...
+# Subtest: 空 folder 是合法目录：本机开 home，远程开机器上的 home
+ok 8 - 空 folder 是合法目录：本机开 home，远程开机器上的 home
+  ---
+  duration_ms: 13.87925
+  type: 'test'
+  ...
+# Subtest: 非 0 退出：发错误通知，远程额外提示可重试
+ok 9 - 非 0 退出：发错误通知，远程额外提示可重试
+  ---
+  duration_ms: 3.101542
+  type: 'test'
+  ...
+# Subtest: exec 抛错（超时 / 程序不存在）：同样发错误通知，锁被释放
+ok 10 - exec 抛错（超时 / 程序不存在）：同样发错误通知，锁被释放
+  ---
+  duration_ms: 5.380708
+  type: 'test'
+  ...
+# Subtest: 连点：只发出一次 exec
+ok 11 - 连点：只发出一次 exec
+  ---
+  duration_ms: 59.364833
+  type: 'test'
+  ...
+# Subtest: addItem 建立带 created 时间线条目的待办
+ok 12 - addItem 建立带 created 时间线条目的待办
+  ---
+  duration_ms: 1.497583
+  type: 'test'
+  ...
+# Subtest: addItem 拒绝空标题
+ok 13 - addItem 拒绝空标题
+  ---
+  duration_ms: 0.48325
+  type: 'test'
+  ...
+# Subtest: addItem 拒绝非法优先级，默认 P2
+ok 14 - addItem 拒绝非法优先级，默认 P2
+  ---
+  duration_ms: 1.421292
+  type: 'test'
+  ...
+# Subtest: id 单调递增且不复用
+ok 15 - id 单调递增且不复用
+  ---
+  duration_ms: 0.208792
+  type: 'test'
+  ...
+# Subtest: setStatus 追加 from→to 时间线
+ok 16 - setStatus 追加 from→to 时间线
+  ---
+  duration_ms: 0.348
+  type: 'test'
+  ...
+# Subtest: setStatus 相同状态不产生时间线条目
+ok 17 - setStatus 相同状态不产生时间线条目
+  ---
+  duration_ms: 0.080375
+  type: 'test'
+  ...
+# Subtest: 终态不得直接改回非终态，需 reopen
+ok 18 - 终态不得直接改回非终态，需 reopen
+  ---
+  duration_ms: 0.346
+  type: 'test'
+  ...
+# Subtest: 终态之间与进入终态不需要 reopen
+ok 19 - 终态之间与进入终态不需要 reopen
+  ---
+  duration_ms: 0.08125
+  type: 'test'
+  ...
+# Subtest: setStatus 拒绝未知状态
+ok 20 - setStatus 拒绝未知状态
+  ---
+  duration_ms: 0.385209
+  type: 'test'
+  ...
+# Subtest: setPriority 与 setTitle 只在变化时记时间线
+ok 21 - setPriority 与 setTitle 只在变化时记时间线
+  ---
+  duration_ms: 0.516542
+  type: 'test'
+  ...
+# Subtest: setNote 只在变化时记时间线，且记录长度而非全文
+ok 22 - setNote 只在变化时记时间线，且记录长度而非全文
+  ---
+  duration_ms: 0.181417
+  type: 'test'
+  ...
+# Subtest: setSpaces 去重并记录前后差集
+ok 23 - setSpaces 去重并记录前后差集
+  ---
+  duration_ms: 0.209917
+  type: 'test'
+  ...
+# Subtest: 所有变更都不就地修改输入状态
+ok 24 - 所有变更都不就地修改输入状态
+  ---
+  duration_ms: 0.115584
+  type: 'test'
+  ...
+# Subtest: 时间线按时间升序
+ok 25 - 时间线按时间升序
+  ---
+  duration_ms: 0.0685
+  type: 'test'
+  ...
+# Subtest: groupBySpace：未关联在最前，多 space 项出现在每组，未知 space 单列
+ok 26 - groupBySpace：未关联在最前，多 space 项出现在每组，未知 space 单列
+  ---
+  duration_ms: 0.219708
+  type: 'test'
+  ...
+# Subtest: groupBySpace：空分组默认保留已知 space，便于一眼看到哪些 space 没事项
+ok 27 - groupBySpace：空分组默认保留已知 space，便于一眼看到哪些 space 没事项
+  ---
+  duration_ms: 0.060375
+  type: 'test'
+  ...
+# Subtest: groupBySpace：默认不含 done/cancelled
+ok 28 - groupBySpace：默认不含 done/cancelled
+  ---
+  duration_ms: 0.055917
+  type: 'test'
+  ...
+# Subtest: groupBySpace：includeClosed 时终态出现在已完成组
+ok 29 - groupBySpace：includeClosed 时终态出现在已完成组
+  ---
+  duration_ms: 0.213792
+  type: 'test'
+  ...
+# Subtest: sortItems：状态 → 优先级 → 更新时间倒序
+ok 30 - sortItems：状态 → 优先级 → 更新时间倒序
+  ---
+  duration_ms: 0.117333
+  type: 'test'
+  ...
+# Subtest: summary 按唯一事项计数，不受多组重复影响
+ok 31 - summary 按唯一事项计数，不受多组重复影响
+  ---
+  duration_ms: 0.089792
+  type: 'test'
+  ...
+# Subtest: findItem 找不到返回 null
+ok 32 - findItem 找不到返回 null
+  ---
+  duration_ms: 0.037917
+  type: 'test'
+  ...
+# Subtest: PRIORITIES 为 P0-P3
+ok 33 - PRIORITIES 为 P0-P3
+  ---
+  duration_ms: 0.042041
+  type: 'test'
+  ...
+# Subtest: archiveItem：收起但保留数据，且不被 normalizeState 丢掉
+ok 34 - archiveItem：收起但保留数据，且不被 normalizeState 丢掉
+  ---
+  duration_ms: 0.397709
+  type: 'test'
+  ...
+# Subtest: archiveItem：已完成的事项不因归档改状态
+ok 35 - archiveItem：已完成的事项不因归档改状态
+  ---
+  duration_ms: 0.059
+  type: 'test'
+  ...
+# Subtest: 时钟回拨不打乱时间线顺序（时间戳单调不减）
+ok 36 - 时钟回拨不打乱时间线顺序（时间戳单调不减）
+  ---
+  duration_ms: 0.0605
+  type: 'test'
+  ...
+# Subtest: seq 只从 t<n> 形式的 id 推导，导入的怪 id 不会把它推到溢出
+ok 37 - seq 只从 t<n> 形式的 id 推导，导入的怪 id 不会把它推到溢出
+  ---
+  duration_ms: 0.094917
+  type: 'test'
+  ...
+# Subtest: seq 已经溢出时拒绝分配新 id，而不是写坏账本
+ok 38 - seq 已经溢出时拒绝分配新 id，而不是写坏账本
+  ---
+  duration_ms: 0.073916
+  type: 'test'
+  ...
+# Subtest: 归档后 reopen 会清掉归档标记（不留死结）
+ok 39 - 归档后 reopen 会清掉归档标记（不留死结）
+  ---
+  duration_ms: 0.063917
+  type: 'test'
+  ...
+# Subtest: 归档已取消的事项不再追加空操作时间线条目
+ok 40 - 归档已取消的事项不再追加空操作时间线条目
+  ---
+  duration_ms: 0.045208
+  type: 'test'
+  ...
+# Subtest: normalizeState 不再静默丢弃信息（spaces/时间戳/时间线条目）
+ok 41 - normalizeState 不再静默丢弃信息（spaces/时间戳/时间线条目）
+  ---
+  duration_ms: 0.226708
+  type: 'test'
+  ...
+# Subtest: normalizeState 读超长标题不截断（截断会让下一次写入把它删掉）
+ok 42 - normalizeState 读超长标题不截断（截断会让下一次写入把它删掉）
+  ---
+  duration_ms: 0.056875
+  type: 'test'
+  ...
+# Subtest: 归档项不计入统计与分组（数字要和列表行数对得上）
+ok 43 - 归档项不计入统计与分组（数字要和列表行数对得上）
+  ---
+  duration_ms: 0.955
+  type: 'test'
+  ...
+# Subtest: unarchiveItem 让事项回到未处理，并解释状态为何变回 todo
+ok 44 - unarchiveItem 让事项回到未处理，并解释状态为何变回 todo
+  ---
+  duration_ms: 0.10475
+  type: 'test'
+  ...
+# Subtest: setAgent 挂上 agent 时清空 space 关联，并记一条 agent 时间线
+ok 45 - setAgent 挂上 agent 时清空 space 关联，并记一条 agent 时间线
+  ---
+  duration_ms: 0.216333
+  type: 'test'
+  ...
+# Subtest: setAgent(null) 解除关联，但不会把 space 关联凭空恢复
+ok 46 - setAgent(null) 解除关联，但不会把 space 关联凭空恢复
+  ---
+  duration_ms: 0.155333
+  type: 'test'
+  ...
+# Subtest: 挂 space 关联会解除 agent 关联（反向互斥）
+ok 47 - 挂 space 关联会解除 agent 关联（反向互斥）
+  ---
+  duration_ms: 0.10225
+  type: 'test'
+  ...
+# Subtest: 清空 space 关联不会顺手解除 agent（那是两件不同的事）
+ok 48 - 清空 space 关联不会顺手解除 agent（那是两件不同的事）
+  ---
+  duration_ms: 0.07275
+  type: 'test'
+  ...
+# Subtest: 同一个 agent 重复挂不产生新时间线（幂等）
+ok 49 - 同一个 agent 重复挂不产生新时间线（幂等）
+  ---
+  duration_ms: 0.119959
+  type: 'test'
+  ...
+# Subtest: 同一个 agent 换了 space：回退位置更新（那是真实变化）
+ok 50 - 同一个 agent 换了 space：回退位置更新（那是真实变化）
+  ---
+  duration_ms: 0.352167
+  type: 'test'
+  ...
+# Subtest: agent 形状不对时拒绝写入
+ok 51 - agent 形状不对时拒绝写入
+  ---
+  duration_ms: 0.403333
+  type: 'test'
+  ...
+# Subtest: normalizeState 拒绝形状不对的 agent 字段，并保留合法字段
+ok 52 - normalizeState 拒绝形状不对的 agent 字段，并保留合法字段
+  ---
+  duration_ms: 0.10275
+  type: 'test'
+  ...
+# Subtest: cloneItem 深拷贝 agent：改副本不影响原状态
+ok 53 - cloneItem 深拷贝 agent：改副本不影响原状态
+  ---
+  duration_ms: 0.306792
+  type: 'test'
+  ...
+# Subtest: moveSpace 从 spA 拖到 spB：去掉来源、加上目标，一次写完成
+ok 54 - moveSpace 从 spA 拖到 spB：去掉来源、加上目标，一次写完成
+  ---
+  duration_ms: 0.229833
+  type: 'test'
+  ...
+# Subtest: moveSpace 不改动原 state（纯函数）
+ok 55 - moveSpace 不改动原 state（纯函数）
+  ---
+  duration_ms: 0.098041
+  type: 'test'
+  ...
+# Subtest: moveSpace 只移除被拖出的那一组，其它 space 关联保留
+ok 56 - moveSpace 只移除被拖出的那一组，其它 space 关联保留
+  ---
+  duration_ms: 0.155209
+  type: 'test'
+  ...
+# Subtest: moveSpace 到未关联（to=null）只移除来源
+ok 57 - moveSpace 到未关联（to=null）只移除来源
+  ---
+  duration_ms: 0.182208
+  type: 'test'
+  ...
+# Subtest: moveSpace 来源为 null（从未关联组拖到某个 space）只做新增
+ok 58 - moveSpace 来源为 null（从未关联组拖到某个 space）只做新增
+  ---
+  duration_ms: 0.071625
+  type: 'test'
+  ...
+# Subtest: moveSpace 落到 space 上会解除 agent 关联（互斥不变量）
+ok 59 - moveSpace 落到 space 上会解除 agent 关联（互斥不变量）
+  ---
+  duration_ms: 0.079583
+  type: 'test'
+  ...
+# Subtest: moveSpace 挪到未关联不会顺手解除 agent（那是另一件事）
+ok 60 - moveSpace 挪到未关联不会顺手解除 agent（那是另一件事）
+  ---
+  duration_ms: 0.07275
+  type: 'test'
+  ...
+# Subtest: moveSpace 目标与来源相同：幂等，不产生新时间线
+ok 61 - moveSpace 目标与来源相同：幂等，不产生新时间线
+  ---
+  duration_ms: 0.063792
+  type: 'test'
+  ...
+# Subtest: moveSpace 拖进已关联的 space：不重复添加
+ok 62 - moveSpace 拖进已关联的 space：不重复添加
+  ---
+  duration_ms: 0.073458
+  type: 'test'
+  ...
+# Subtest: moveSpace 找不到事项时报错，而不是静默成功
+ok 63 - moveSpace 找不到事项时报错，而不是静默成功
+  ---
+  duration_ms: 0.089958
+  type: 'test'
+  ...
+# Subtest: 默认路径固定，不受 XDG_DATA_HOME 影响
+ok 64 - 默认路径固定，不受 XDG_DATA_HOME 影响
+  ---
+  duration_ms: 0.686917
+  type: 'test'
+  ...
+# Subtest: 空文件读取返回空状态，而不是报错
+ok 65 - 空文件读取返回空状态，而不是报错
+  ---
+  duration_ms: 5.781791
+  type: 'test'
+  ...
+# Subtest: 写入会自动创建嵌套目录
+ok 66 - 写入会自动创建嵌套目录
+  ---
+  duration_ms: 23.15625
+  type: 'test'
+  ...
+# Subtest: CAS：expected 不匹配时拒绝写入且不破坏原文件
+ok 67 - CAS：expected 不匹配时拒绝写入且不破坏原文件
+  ---
+  duration_ms: 25.863208
+  type: 'test'
+  ...
+# Subtest: CAS：expected 为 null 时，文件已存在则拒绝（防止覆盖别人刚写的）
+ok 68 - CAS：expected 为 null 时，文件已存在则拒绝（防止覆盖别人刚写的）
+  ---
+  duration_ms: 18.442458
+  type: 'test'
+  ...
+# Subtest: update 在冲突时重读并重放变更，两次并发写都保留
+ok 69 - update 在冲突时重读并重放变更，两次并发写都保留
+  ---
+  duration_ms: 64.130125
+  type: 'test'
+  ...
+# Subtest: update 在并发竞争下仍不丢数据（交错执行）
+ok 70 - update 在并发竞争下仍不丢数据（交错执行）
+  ---
+  duration_ms: 250.49275
+  type: 'test'
+  ...
+# Subtest: 写入中途失败时抛出冲突，且原文件不变
+ok 71 - 写入中途失败时抛出冲突，且原文件不变
+  ---
+  duration_ms: 45.779917
+  type: 'test'
+  ...
+# Subtest: 损坏的 JSON 抛出可定位错误，不覆盖原文件
+ok 72 - 损坏的 JSON 抛出可定位错误，不覆盖原文件
+  ---
+  duration_ms: 5.317666
+  type: 'test'
+  ...
+# Subtest: 写入过程不留临时文件
+ok 73 - 写入过程不留临时文件
+  ---
+  duration_ms: 14.480667
+  type: 'test'
+  ...
+# Subtest: 关联活着 agent 的事项不进任何 space 组
+ok 74 - 关联活着 agent 的事项不进任何 space 组
+  ---
+  duration_ms: 1.30725
+  type: 'test'
+  ...
+# Subtest: agent 已关闭：回退显示在它当时所在的 space
+ok 75 - agent 已关闭：回退显示在它当时所在的 space
+  ---
+  duration_ms: 0.233042
+  type: 'test'
+  ...
+# Subtest: agent 关闭且它当时的 space 也没了：进孤儿组
+ok 76 - agent 关闭且它当时的 space 也没了：进孤儿组
+  ---
+  duration_ms: 0.102166
+  type: 'test'
+  ...
+# Subtest: agent 从 spA 搬到 spB 后仍然只挂在 agent 上，不落到 space 组
+ok 77 - agent 从 spA 搬到 spB 后仍然只挂在 agent 上，不落到 space 组
+  ---
+  duration_ms: 0.148917
+  type: 'test'
+  ...
+# Subtest: deriveAgents：每个 agent 名下只有关联到它的事项
+ok 78 - deriveAgents：每个 agent 名下只有关联到它的事项
+  ---
+  duration_ms: 0.201708
+  type: 'test'
+  ...
+# Subtest: 不变量：每条事项在侧栏与 Agents 栏合计恰好出现一次
+ok 79 - 不变量：每条事项在侧栏与 Agents 栏合计恰好出现一次
+  ---
+  duration_ms: 0.317167
+  type: 'test'
+  ...
+# Subtest: 不变量：已完成与已归档的口径在两个视图里一致
+ok 80 - 不变量：已完成与已归档的口径在两个视图里一致
+  ---
+  duration_ms: 0.178708
+  type: 'test'
+  ...
+# Subtest: 未关联事项进 unlinked，且不落在任何 space 组
+ok 81 - 未关联事项进 unlinked，且不落在任何 space 组
+  ---
+  duration_ms: 0.078834
+  type: 'test'
+  ...
+# Subtest: 一个事项关联多个 space 时，在每个组各出现一次
+ok 82 - 一个事项关联多个 space 时，在每个组各出现一次
+  ---
+  duration_ms: 0.329334
+  type: 'test'
+  ...
+# Subtest: 空 space 仍然返回一个空组（不是缺项）
+ok 83 - 空 space 仍然返回一个空组（不是缺项）
+  ---
+  duration_ms: 0.344792
+  type: 'test'
+  ...
+# Subtest: 归档项不进任何组，也不计入已完成
+ok 84 - 归档项不进任何组，也不计入已完成
+  ---
+  duration_ms: 0.135208
+  type: 'test'
+  ...
+# Subtest: 已完成/已取消单独成列，不混进开放行
+ok 85 - 已完成/已取消单独成列，不混进开放行
+  ---
+  duration_ms: 0.132125
+  type: 'test'
+  ...
+# Subtest: 关联的 space 全部不存在时进孤儿组，且不出现在任何 space 组
+ok 86 - 关联的 space 全部不存在时进孤儿组，且不出现在任何 space 组
+  ---
+  duration_ms: 0.790167
+  type: 'test'
+  ...
+# Subtest: 部分关联失效：有落脚处就不重复进孤儿组
+ok 87 - 部分关联失效：有落脚处就不重复进孤儿组
+  ---
+  duration_ms: 0.20175
+  type: 'test'
+  ...
+# Subtest: 组内排序：进行中先于待办，同级看优先级
+ok 88 - 组内排序：进行中先于待办，同级看优先级
+  ---
+  duration_ms: 0.072875
+  type: 'test'
+  ...
+# Subtest: 坏输入不炸：items 缺失或 space 列表缺失时返回空结构
+ok 89 - 坏输入不炸：items 缺失或 space 列表缺失时返回空结构
+  ---
+  duration_ms: 0.070292
+  type: 'test'
+  ...
+# Subtest: mod/core.js 与 src/core.js 同步（哈希头 + 正文一致）
+ok 90 - mod/core.js 与 src/core.js 同步（哈希头 + 正文一致）
+  ---
+  duration_ms: 6.207333
+  type: 'test'
+  ...
+# Subtest: mod/core.js 可被 Node 直接加载（没有导入宿主 API）
+ok 91 - mod/core.js 可被 Node 直接加载（没有导入宿主 API）
+  ---
+  duration_ms: 1.223791
+  type: 'test'
+  ...
+# Subtest: 侧栏副本与 mod/core.js 一致（同源同哈希）
+ok 92 - 侧栏副本与 mod/core.js 一致（同源同哈希）
+  ---
+  duration_ms: 1.079
+  type: 'test'
+  ...
+# Subtest: Agents 栏副本与 mod/core.js / todo-view.js 一致（同源同哈希）
+ok 93 - Agents 栏副本与 mod/core.js / todo-view.js 一致（同源同哈希）
+  ---
+  duration_ms: 6.923834
+  type: 'test'
+  ...
+# Subtest: 侧栏的 store.js 与 mod/store.js 一致
+ok 94 - 侧栏的 store.js 与 mod/store.js 一致
+  ---
+  duration_ms: 1.763125
+  type: 'test'
+  ...
+# Subtest: Agents 栏的 store.js 与 mod/store.js 一致
+ok 95 - Agents 栏的 store.js 与 mod/store.js 一致
+  ---
+  duration_ms: 2.137042
+  type: 'test'
+  ...
+# Subtest: 拖拽契约副本与源文件一致
+ok 96 - 拖拽契约副本与源文件一致
+  ---
+  duration_ms: 2.965208
+  type: 'test'
+  ...
+# Subtest: CodeBuddy 打开模块与源文件一致
+ok 97 - CodeBuddy 打开模块与源文件一致
+  ---
+  duration_ms: 2.754209
+  type: 'test'
+  ...
+# Subtest: 标签栏与右键菜单 mod 的模块都能被 Node 解析（语法）
+ok 98 - 标签栏与右键菜单 mod 的模块都能被 Node 解析（语法）
+  ---
+  duration_ms: 113.824208
+  type: 'test'
+  ...
+# Subtest: install.sh 的 mod 清单是单一事实源，且清单里的文件都存在
+ok 99 - install.sh 的 mod 清单是单一事实源，且清单里的文件都存在
+  ---
+  duration_ms: 3.61425
+  type: 'test'
+  ...
+# Subtest: install.sh 不删除也不移走已安装的 tabs-todo
+ok 100 - install.sh 不删除也不移走已安装的 tabs-todo
+  ---
+  duration_ms: 0.963667
+  type: 'test'
+  ...
+# Subtest: 克隆件的非上游改动都带 [herdr-todo] 标记
+ok 101 - 克隆件的非上游改动都带 [herdr-todo] 标记
+  ---
+  duration_ms: 1.137333
+  type: 'test'
+  ...
+# Subtest: spaces-todo 对 menu-todo 的依赖既有安装保障也有运行时回退
+ok 102 - spaces-todo 对 menu-todo 的依赖既有安装保障也有运行时回退
+  ---
+  duration_ms: 1.490041
+  type: 'test'
+  ...
+# Subtest: 侧栏 mod 的模块都能被 Node 解析（语法）
+ok 103 - 侧栏 mod 的模块都能被 Node 解析（语法）
+  ---
+  duration_ms: 149.796583
+  type: 'test'
+  ...
+# Subtest: Agents 栏 mod 的模块都能被 Node 解析（语法）
+ok 104 - Agents 栏 mod 的模块都能被 Node 解析（语法）
+  ---
+  duration_ms: 137.554042
+  type: 'test'
+  ...
+# Subtest: 安装脚本语法合法（sh -n）
+ok 105 - 安装脚本语法合法（sh -n）
+  ---
+  duration_ms: 15.159916
+  type: 'test'
+  ...
+# Subtest: shell 脚本里变量后面不紧跟全角字符
+ok 106 - shell 脚本里变量后面不紧跟全角字符
+  ---
+  duration_ms: 3.609458
+  type: 'test'
+  ...
+# Subtest: python 安装脚本语法合法
+ok 107 - python 安装脚本语法合法
+  ---
+  duration_ms: 50.936792
+  type: 'test'
+  ...
+1..107
+# tests 107
+# suites 0
+# pass 107
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 557.927542

@@ -5,10 +5,27 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, checking, agents } from "herdr";
+// [herdr-todo] 这一行比上游多了 checking/agents（待办扩展要用的）与
+// appHome/readTextFile（右键菜单探明 menu-todo 是否装着）。重新克隆后这 4 个名字
+// 必须加回去——漏掉任何一个都会在 init 或右键时抛 ReferenceError，而
+// herdr-app check 因为 checking() 短路与不执行 menu() 而照样报 passed。
+import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, checking, agents, appHome, readTextFile } from "herdr"; // [herdr-todo]
 import { read, command, dataDir } from "./store.js";
 import { deriveSidebar } from "./todo-view.js";
 import { DRAG_KEY, readDrag, beginDrag, endDrag, staleOnPress, dragGhost, learnRoot } from "./todo-drag.js";
+
+// [herdr-todo] menu-todo 探明的判据：这段文本像不像一个能加载的 ES 模块。
+// 只做「不为空、不是纯注释、有 export」这三件判断——空文件与语法错是 present-but-broken
+// 最常见的两种；不完整解析（mod 沙箱里没有解析器，写个半吊子解析器只会误判）。
+function looksLoadable(text) {
+  if (typeof text !== "string") return false;
+  const code = text
+    .replace(/\/\*[\s\S]*?\*\//g, "") // 块注释
+    .replace(/^\s*\/\/.*$/gm, "") // 行注释
+    .trim();
+  if (!code) return false;
+  return /\bexport\b/.test(code);
+}
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -84,6 +101,12 @@ export default class Spaces extends View {
     this.scroll = ScrollHandle.new(); // the list's position: the active space is brought into view through it
     this.activeAt = -1; // the active space's place among the list's children (headers and rows), -1 when not drawn
     this.machines = [];
+    // [herdr-todo] space 右键菜单用本仓库的 menu-todo（多了「用 CodeBuddy 打开」）。
+    // 探明它是否真的装着：openOverlay 指向不存在的 mod 不报错，只是什么也不显示，
+    // 那时必须退回自带 menu，否则整份 space 菜单会静默失效。
+    // 默认 false（= 用自带 menu）：没探明之前退回到「一定能用」的那个。
+    this.menuTodo = false;
+    this.probeMenuTodo();
     try {
       this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
       if (!this.reconnecting || typeof this.reconnecting !== "object" || Array.isArray(this.reconnecting)) this.reconnecting = {};
@@ -290,7 +313,46 @@ export default class Spaces extends View {
 
   menu(w) {
     // A popup is as tall as its items; height is only the most.
-    openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: w.id } } });
+    // [herdr-todo] 指向本仓库的克隆件（多了「用 CodeBuddy 打开」一项）。
+    // menu-todo 没装上时必须退回 App 自带的 menu：openOverlay 指向不存在的 mod
+    // 不抛错（实测返回一个 overlay id），菜单不出现，space 的整份右键菜单
+    // （重命名/关闭/worktree）会一起失效。可用性在 init 时异步探明（见 probeMenuTodo()），
+    // 这里同步分支，不为弹菜单引入一个「点了稍后才出现」的异步窗口。
+    openOverlay({
+      mod: this.menuTodo ? "menu-todo" : "menu",
+      kind: "popup",
+      width: 200,
+      height: 260,
+      props: { tab: "space", target: { id: w.id } },
+    });
+  }
+
+  /**
+   * [herdr-todo] 探明 menu-todo 能不能用；拿不准就保持 false，退回自带 menu。
+   *
+   * `openOverlay` 指向不存在的 mod 不报错、也不显示任何东西，所以判据必须自己给。
+   * `herdr-app check` 不校验目标存在性，帮不上忙。
+   *
+   * 两层判据，都只看「文件内容像不像一个能加载的 mod」，不真去加载（mod 沙箱里没有
+   * import 任意路径的能力）：
+   *   1. main.js 读得到；
+   *   2. 它是 ES 模块（有 export）——空文件、纯注释、JSON 片段都算坏；
+   * 外加 `codebuddy.js` 也在：menu-todo 的 main.js 第一件事就是 import 它，
+   * 缺了照样是「加载失败的 mod」。这三条都是「present but broken」的常见形态。
+   *
+   * `herdr-app check` 里不跑：那时读的是仓库里的 mod 目录而不是用户的安装目录，
+   * 结果没有意义（而且 checking() 短路是本 mod 的既有约定）。
+   */
+  probeMenuTodo() {
+    if (checking()) return;
+    this.menuTodo = false;
+    const dir = `${appHome()}/mods/menu-todo`;
+    Promise.all([readTextFile(`${dir}/main.js`), readTextFile(`${dir}/codebuddy.js`)]).then(
+      ([main, dep]) => {
+        this.menuTodo = looksLoadable(main) && looksLoadable(dep);
+      },
+      () => { this.menuTodo = false; },
+    );
   }
 
   orderingDue(now) {
