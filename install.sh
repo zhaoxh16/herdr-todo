@@ -7,6 +7,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 HOME_DIR=${HOME:?install.sh 需要 HOME 环境变量}
 BIN_DIR="${HERDR_TODO_BIN_DIR:-$HOME_DIR/.local/bin}"
 APP_HOME="${HERDR_APP_HOME:-$HOME_DIR/.config/herdr-app}"
+CONFIG_DIR="$HOME_DIR/.config/herdr-todo"
 MOD_NAME="herdr-todo"
 # 备份戳带毫秒：同一秒内跑两次会互相覆盖，把真正的原始内容弄丢。
 # BSD date（macOS）不支持 %N，会原样输出字面量 "N"——那样两次运行的戳完全相同。
@@ -82,9 +83,46 @@ each_mod check_mod
 unset -f check_mod
 command -v node >/dev/null 2>&1 || die "需要 node（>=18），未找到"
 command -v python3 >/dev/null 2>&1 || die "需要 python3，未找到"
+# mysql2 是首个运行时依赖，而 CLI 是从 ~/.local/bin 链回本仓库的（bin/herdr-todo
+# 用相对路径 import ../src/…），所以 node_modules 只需要在仓库里存在一次。
+# 缺它时装出来的 CLI 能启动、连接时才崩——比装不上更糟，必须在这里拦下。
+[ -d "$ROOT/node_modules/mysql2" ] || die "缺少 node_modules/mysql2。请在 $ROOT 运行：npm install"
+[ -f "$ROOT/src/store/mysql.js" ] || die "缺少 $ROOT/src/store/mysql.js"
 [ -d "$APP_HOME" ] || die "找不到 ${APP_HOME}；请先安装并运行过 Herdr App"
 [ -f "$APP_HOME/layouts/main.json" ] || die "找不到 $APP_HOME/layouts/main.json；请先运行一次 Herdr App 让它生成默认布局"
 [ -f "$APP_HOME/keys.json" ] || warn "警告：没有 $APP_HOME/keys.json，最后一步的快捷键会跳过"
+
+# 迁移期的致命顺序必须在**改动任何文件之前**拦下。
+#
+# 旧版 mod 从不调用 pull，所以「缓存路径上放着 v1 旧账本」在旧版本里是安全的。
+# 新 mod 装好后两个侧栏每 10 秒自动 pull，而 pull 不认识 v1——它把这份文件当成
+# 一份可疑的缓存，整体替换成 v2 空快照（实测 254 字节 → 81 字节），且不留备份。
+# 那时 import-json 只能读到空缓存，报「旧账本里没有事项」，数据再也回不来。
+#
+# 所以：发现缓存路径上是一份非空的 v1 账本，就停下来让用户先导入。
+# 判断放在这里而不是「装完再提示」——提示出现在装完之后，伤害已经造成。
+LEDGER="$HOME_DIR/.local/share/herdr-todo/todos.json"
+is_v1_ledger() {
+  [ -f "$1" ] || return 1
+  node -e '
+    try {
+      const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      process.exit(s && s.v === 1 && Array.isArray(s.items) && s.items.length ? 0 : 1);
+    } catch { process.exit(1); }
+  ' "$1" 2>/dev/null
+}
+if is_v1_ledger "$LEDGER"; then
+  die "检测到 $LEDGER 还是一份旧版账本（v1，$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(s.items.length))' "$LEDGER") 条事项）。
+新面板每 10 秒会自动 pull，而 pull 会把它覆盖成空缓存——这一步必须在装 mod **之前**做完：
+
+  1. cp \"$LEDGER\" \"$LEDGER.v1\"                      # 先留一份
+  2. 写好 ${CONFIG_DIR}/config.json，然后：
+     herdr-todo import-json \"$LEDGER.v1\" --dry-run     # 确认条数
+     herdr-todo import-json \"$LEDGER.v1\"
+  3. 再重新运行 ./install.sh
+
+如果你确认这份账本已经不需要（例如已在别的机器上导入过），把它移走后再装。"
+fi
 
 # 暂存目录在 $APP_HOME 下（与 mods/ 同一文件系统，rename 才是原子的），
 # 失败时统一清掉，不把半成品留在用户目录里。
@@ -201,7 +239,12 @@ say "  herdr-app check $APP_HOME/mods/tabs-todo      # 校验标签栏 CodeBuddy
 say "  herdr-app check $APP_HOME/mods/menu-todo      # 校验 space 右键菜单能加载"
 say "  herdr-app do layout.switch --name herdr-todo   # 切到带待办面板的布局"
 say ""
-say "数据文件：$HOME_DIR/.local/share/herdr-todo/todos.json"
+say "还要连上数据库，面板才有数据（读 README「接入一 / 接入二」）："
+say "  新设备、数据已在云端：写好 ${CONFIG_DIR}/config.json（owner 与其它设备一致）后"
+say "    herdr-todo pull        # 首次全量重建，并把本机登记成一台设备"
+say "  本机有旧账本要迁上云：安装脚本已在前面拦下这种情况，按它给的步骤先导入。"
+say ""
+say "数据文件：$HOME_DIR/.local/share/herdr-todo/todos.json（派生缓存，真相在 MySQL）"
 say "命令行：  herdr-todo add \"要做的事\" --space <space-id>"
 say ""
 say "待办列表在左侧 Spaces 侧栏：每个 space 行下面就是它的待办，点一行看详情。"

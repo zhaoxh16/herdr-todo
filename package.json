@@ -1,9 +1,9 @@
 {
   "name": "herdr-todo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Work items linked to Herdr spaces: timeline, status, priority",
+  "description": "Work items linked to Herdr spaces: timeline, status, priority, multi-device sync over MySQL",
   "bin": {
     "herdr-todo": "bin/herdr-todo"
   },
@@ -12,7 +12,11 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.js",
+    "test:db": "HERDR_TODO_REQUIRE_DB=1 node --test tests/*.test.js",
     "sync-core": "sh scripts/sync-core.sh"
+  },
+  "dependencies": {
+    "mysql2": "^3.11.0"
   },
   "engines": {
     "node": ">=18"

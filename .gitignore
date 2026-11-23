@@ -18,3 +18,7 @@ gpui-kit.d.ts
 
 # 本地验证产物（截图、临时账本）
 /*.png
+
+# 任务工作材料：plan/activity 记进仓库（跨 session 接手要用），但 workspace/ 下是
+# 评审证据与截图——待办标题是明文、界面截图含真实数据，不随仓库分发。
+.agent/*/workspace/

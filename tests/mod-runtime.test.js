@@ -31,7 +31,7 @@ const HERDR_STUB = `
 const s = globalThis.__hr ?? (globalThis.__hr = {});
 s.spaces ??= []; s.panes ??= []; s.terminals ??= []; s.agents ??= [];
 s.overlays ??= []; s.execs ??= []; s.runs ??= []; s.notes ??= [];
-s.props ??= {}; s.files ??= {}; s.menuReads ??= 0; s.isChecking ??= false;
+s.props ??= {}; s.files ??= {}; s.menuReads ??= 0; s.isChecking ??= false; s.closes ??= [];
 export const spaces = () => s.spaces;
 export const machines = () => [];
 export const panes = () => s.panes;
@@ -39,7 +39,7 @@ export const terminals = () => s.terminals;
 export const agents = () => s.agents;
 export const run = (name, args) => { s.runs.push([name, args]); return null; };
 export const props = () => s.props;
-export const closeOverlay = () => null;
+export const closeOverlay = (id) => { (s.closes ??= []).push(id); return null; };
 export const openOverlay = (spec) => { s.overlays.push(spec); return "o1"; };
 export const theme = () => ({ muted: "m", dim: "d", hover: "h", foreground: "f", border: "b", chrome: "c", raised: "r", selected: "s", working: "w" });
 export const keys = () => [];
@@ -349,3 +349,544 @@ export const ScrollHandle = { new: () => ({ scroll_to_item() {}, track_scroll() 
   Cls.prototype.render.call(inst, fakeCx());
   return { labels: globalThis.__seen };
 }
+
+// ---------------- herdr-todo（详情窗）：点标题改名 ----------------
+//
+// 这里断言的是用户能看见、能触发的三件事：
+//   1. 详情窗头部有标题文字本身，点它才进编辑态（**没有**「改标题」按钮）；
+//   2. 保存发出的命令形状正确——标题落在 `--` 之后，不会被当成选项；
+//   3. 写失败时编辑态与用户输入都还在（否则用户会以为改成了，或者输入被吞）。
+//
+// 宿主替身要能记录「点击回调」与「输入框原文」，所以 gpui-kit 用记录型替身：
+// 元素上挂的回调按注册顺序存进 __clicks，字符串参数存进 __seen。
+
+const RECORD_KIT = `
+export class View { constructor() {} }
+const el = new Proxy(function () {}, {
+  get: (t, k) => {
+    if (k === "then") return undefined;
+    if (k === "id") return (v) => { globalThis.__cur = v; (globalThis.__ids ??= []).push(v); return el; };
+    if (k === "child" || k === "children") {
+      return (v) => {
+        // 真实宿主对 null 会抛错（child(value) expects an element, a string …），
+        // 而整个窗口渲染失败。替身必须同样严格：宽松的桩会把这类错误放过去，
+        // 一直留到真机上才炸。
+        const list = k === "children" ? [...(v ?? [])] : [v];
+        for (const x of list) {
+          if (x === null || x === undefined) {
+            throw new TypeError(k + "(value) expects an element, a string, or a number，收到了 " + x);
+          }
+        }
+        const g = globalThis.__hr; (g.children ??= []).push(...list);
+        for (const x of list) {
+          if (typeof x === "string") (globalThis.__labels ??= []).push(x);
+          // 记下「这段文本挂在哪个 id 的容器里」：错误提示必须在头部、不能落在
+          // 滚动区——只断言文本存在的话，把它挪回滚动区测试也不会红。
+          (globalThis.__parents ??= []).push([x, globalThis.__cur ?? null]);
+        }
+        return el;
+      };
+    }
+    if (k === "on_click" || k === "on_mouse_down" || k === "on_key_down") {
+      // on_mouse_down 是 (button, fn)；on_click / on_key_down 是 (fn)。
+      return (...a) => {
+        const fn = a.filter((x) => typeof x === "function").at(-1);
+        (globalThis.__clicks ??= []).push([k, fn, globalThis.__cur ?? null, ...a.slice(0, a.indexOf(fn))]);
+        return el;
+      };
+    }
+    if (k === "hover" || k === "tooltip") {
+      return (v) => { (globalThis.__styles ??= []).push([k, v, globalThis.__cur ?? null]); return el; };
+    }
+    return el;
+  },
+  apply: () => el,
+});
+export const div = () => (globalThis.__cur = null, el), svg = () => el, image = () => el;`;
+
+const RECORD_BASE = `
+const el = new Proxy(function () {}, {
+  get: (t, k) => {
+    if (k === "then") return undefined;
+    if (k === "id") return (v) => { globalThis.__cur = v; (globalThis.__ids ??= []).push(v); return el; };
+    if (k === "child" || k === "children") {
+      return (v) => {
+        // 真实宿主对 null 会抛错（child(value) expects an element, a string …），
+        // 而整个窗口渲染失败。替身必须同样严格：宽松的桩会把这类错误放过去，
+        // 一直留到真机上才炸。
+        const list = k === "children" ? [...(v ?? [])] : [v];
+        for (const x of list) {
+          if (x === null || x === undefined) {
+            throw new TypeError(k + "(value) expects an element, a string, or a number，收到了 " + x);
+          }
+        }
+        const g = globalThis.__hr; (g.children ??= []).push(...list);
+        for (const x of list) {
+          if (typeof x === "string") (globalThis.__labels ??= []).push(x);
+          // 记下「这段文本挂在哪个 id 的容器里」：错误提示必须在头部、不能落在
+          // 滚动区——只断言文本存在的话，把它挪回滚动区测试也不会红。
+          (globalThis.__parents ??= []).push([x, globalThis.__cur ?? null]);
+        }
+        return el;
+      };
+    }
+    if (k === "on_click" || k === "on_mouse_down" || k === "on_key_down") {
+      // on_mouse_down 是 (button, fn)；on_click / on_key_down 是 (fn)。
+      return (...a) => {
+        const fn = a.filter((x) => typeof x === "function").at(-1);
+        (globalThis.__clicks ??= []).push([k, fn, globalThis.__cur ?? null, ...a.slice(0, a.indexOf(fn))]);
+        return el;
+      };
+    }
+    if (k === "hover" || k === "tooltip") {
+      return (v) => { (globalThis.__styles ??= []).push([k, v, globalThis.__cur ?? null]); return el; };
+    }
+    return el;
+  },
+  apply: () => el,
+});
+export const v_flex = () => (globalThis.__cur = null, el), h_flex = () => (globalThis.__cur = null, el);
+export class InputState {
+  static new(o) {
+    const st = {
+      __value: o?.value ?? "",
+      value() { return this.__value; },
+      set_value(v) { this.__value = v; },
+      focus() { globalThis.__focused = "input"; },
+      on(ev, fn) { (globalThis.__submits ??= {})[ev] = fn; return true; },
+    };
+    (globalThis.__states ??= []).push(st);
+    return st;
+  }
+}
+export const Input = { new: (st) => { (globalThis.__inputs ??= []).push(st); return { state: st }; } };
+export class TextareaState {
+  static new(o) {
+    const st = {
+      __value: o?.value ?? "",
+      value() { return this.__value; },
+      set_value(v) { this.__value = v; },
+      focus() { globalThis.__focused = "note"; },
+      on(ev, fn) { (globalThis.__submits ??= {})[ev] = fn; return true; },
+    };
+    (globalThis.__states ??= []).push(st);
+    return st;
+  }
+}
+export const Textarea = { new: (st) => { (globalThis.__textareas ??= []).push(st); return { state: st }; } };
+export const ScrollHandle = { new: () => ({ scroll_to_item() {}, track_scroll() {} }) };`;
+
+// 详情窗需要一条账本。read() 走 readTextFile → normalizeState，所以写成真 JSON。
+const ITEM = {
+  id: "t1",
+  num: 12,
+  title: "原来的标题",
+  note: "",
+  priority: "P2",
+  status: "todo",
+  spaces: [],
+  created: 1000,
+  updated: 2000,
+  timeline: [{ at: 1000, kind: "created", from: null, to: "todo", by: "panel" }],
+};
+
+/**
+ * 详情窗专用的 cx：spawn 真的跑，sleep 可控。
+ *
+ * 通用的 fakeCx 让 sleep 直接 reject，异步循环一进第二轮就没了——「保存成功后
+ * 申请焦点」与「进入编辑时作废这份申请」这类时序问题因此完全不可见。
+ * `pausable` 打开时 sleep 挂起，测试用 step() 一轮一轮放行，才观察得到
+ * 「谁在什么时候还活着」。focus_handle 记录谁持有键盘：这是唯一能观察到
+ * takeFocus() 有没有把键盘抢走的信号。
+ */
+function detailCx(control = { immediate: true, pending: [] }) {
+  const frame = {
+    is_focused: () => globalThis.__focused === "frame",
+    focus: () => { globalThis.__focused = "frame"; },
+  };
+  const sleep = () =>
+    control.immediate ? Promise.resolve() : new Promise((r) => control.pending.push(r));
+  const spawn = (fn) => {
+    try {
+      const r = fn({ ...detailCx(control), sleep });
+      if (r?.catch) r.catch(() => {});
+    } catch {}
+  };
+  return {
+    focus_handle: () => frame,
+    spawn,
+    sleep,
+    timer: { every() {} },
+    new: () => ({}),
+    notify() {},
+  };
+}
+
+/** 放行一轮挂起的 sleep（pausable 模式用）。 */
+async function step(control) {
+  const batch = control.pending.splice(0);
+  for (const r of batch) r();
+  await settle();
+}
+
+async function loadDetail({ execCode = 0, stderr = "标题不能为空", slowExec = false, pausable = false } = {}) {
+  const stub = HERDR_STUB.replace(
+    // 监听器在这里没有意义：让 watch() 永远停在 await 上（不抛、不空转）。
+    // 通用的这份替身必须抛错，否则侧栏那条 for(;;) 会立刻重进 catch 死循环。
+    /^export const watchFolder = .*$/m,
+    'export const watchFolder = () => new Promise(() => {});',
+  ).replace(
+    /^export const exec = .*$/m,
+    `export const exec = async (cmd, args, opts) => { s.execs.push([cmd, args, opts]); ${slowExec ? "await globalThis.__execGate;\n" : ""}return { code: ${execCode}, stdout: "", stderr: ${JSON.stringify(execCode ? stderr : "")} }; };`,
+  );
+  // herdr-todo 的源文件就在 mod/ 根下。
+  const { mod, s } = await loadMod(".", { herdr: stub, gpk: RECORD_KIT, base: RECORD_BASE });
+  // 详情窗 props：props().detail 决定打开哪一条；read() 走 readTextFile 读账本。
+  s.props = { detail: "t1", overlay: "o1" };
+  s.files[`/tmp/home/.local/share/herdr-todo/todos.json`] = JSON.stringify({ v: 1, seq: 1, items: [ITEM] });
+  globalThis.__seen = [];
+  globalThis.__clicks = [];
+  globalThis.__ids = [];
+  globalThis.__labels = [];
+  globalThis.__styles = [];
+  globalThis.__states = [];
+  globalThis.__inputs = [];
+  globalThis.__textareas = [];
+  globalThis.__submits = {};
+  globalThis.__focused = "frame";
+  const Cls = mod.default;
+  const inst = Object.create(Cls.prototype);
+  const control = { immediate: !pausable, pending: [] };
+  Cls.prototype.init.call(inst, {}, detailCx(control));
+  await settle();
+  return { mod, s, inst, Cls, control };
+}
+
+// 渲染一次并返回替身记到的东西。
+async function renderDetailOnce(inst, Cls) {
+  globalThis.__clicks = [];
+  globalThis.__ids = [];
+  globalThis.__labels = [];
+  globalThis.__styles = [];
+  globalThis.__inputs = [];
+  globalThis.__textareas = [];
+  globalThis.__parents = [];
+  Cls.prototype.render.call(inst, fakeCx());
+  return {
+    clicks: globalThis.__clicks,
+    ids: globalThis.__ids,
+    labels: globalThis.__labels,
+    styles: globalThis.__styles,
+    inputs: globalThis.__inputs,
+    textareas: globalThis.__textareas,
+    parents: globalThis.__parents,
+  };
+}
+
+/**
+ * 触发某个 id 上的事件。
+ *
+ * 按 id 定位而不是「挨个试所有点击回调」：后者依赖「回调之间无副作用」，
+ * 而这个窗口里 ✕ 的回调就会关窗、编辑备注的回调会换编辑器——挨个试等于让
+ * 测试自己制造状态污染，还会在「入口被接到错误元素上」时依然通过。
+ * `__cur` 记录的是最近一次 `.id()` 的值，所以元素上的回调能对上自己的 id。
+ */
+function fire(clicks, id, kind = "on_click") {
+  const hit = clicks.filter(([k, , at]) => k === kind && at === id);
+  assert.ok(hit.length, `id=${id} 上应挂着 ${kind}（实际有：${clicks.map(([k, , a]) => `${a}:${k}`).join(", ")}）`);
+  for (const [, fn] of hit) fn();
+}
+
+/** 点标题文字进编辑态。标题元素的 id 是 `todo-title-<事项 id>`。 */
+async function clickTitle(inst, Cls) {
+  const { clicks } = await renderDetailOnce(inst, Cls);
+  fire(clicks, "todo-title-t1");
+  assert.equal(inst.titleEditingId, "t1", "点标题文字应进入编辑态");
+}
+
+test("详情窗：入口是标题文字本身，没有「改标题」按钮，且看得出可点", async () => {
+  const { inst, Cls } = await loadDetail();
+  const { labels, ids, styles } = await renderDetailOnce(inst, Cls);
+  assert.ok(labels.includes("原来的标题"), "详情窗头部应显示标题文字");
+  assert.ok(
+    !labels.some((s) => /改标题|编辑标题/.test(s)),
+    `不该出现「改标题」按钮：入口就是标题文字本身（实际渲染到：${labels.join(" / ")}）`,
+  );
+  // 可点的线索：悬停底色与 tooltip。缺了它们标题看起来就是只读文字。
+  const titleStyles = styles.filter(([, , at]) => at === "todo-title-t1");
+  assert.ok(
+    titleStyles.some(([k]) => k === "hover") && titleStyles.some(([k]) => k === "tooltip"),
+    `标题元素应有 hover 与 tooltip：${JSON.stringify(titleStyles)}`,
+  );
+  assert.ok(ids.includes("todo-title-t1"), "标题元素应带稳定 id，否则 UI 自动化点不到它");
+});
+
+test("详情窗：显示 #编号（命令行按编号寻址，面板不给就无从照着敲）", async () => {
+  const { inst, Cls } = await loadDetail();
+  const { labels, ids } = await renderDetailOnce(inst, Cls);
+  assert.ok(ids.includes("detail-num"), "详情窗头部应有编号元素");
+  assert.ok(labels.includes("#12"), `头部应显示 #12（实际渲染：${labels.join(" / ")}）`);
+});
+
+test("详情窗：在标题上按下不会变成拖窗口（按下被拦住）", async () => {
+  // 详情窗是 kind:"window"：任意未被阻止的按下都会发起窗口拖动，点标题就收不到
+  // on_click。这条在真实 App 里表现为「点标题没用、窗口被拖走」，只能靠按下事件
+  // 是否调用了 stop_propagation 来在测试里钉住。
+  const { inst, Cls } = await loadDetail();
+  const { clicks } = await renderDetailOnce(inst, Cls);
+  const down = clicks.filter(([k, , at]) => k === "on_mouse_down" && at === "todo-title-t1");
+  assert.ok(down.length, "标题元素应接 on_mouse_down（否则按下会变成拖窗口）");
+  let stopped = 0;
+  for (const [, fn] of down) fn({}, { stop_propagation: () => { stopped += 1; } });
+  assert.equal(stopped, down.length, "标题上的每一次按下都应 stop_propagation");
+});
+
+test("详情窗：点标题进编辑态，输入框预填当前标题", async () => {
+  const { inst, Cls } = await loadDetail();
+  await clickTitle(inst, Cls);
+  assert.equal(String(inst.titleDraft?.value()), "原来的标题", "输入框应预填当前标题");
+  const { labels, inputs } = await renderDetailOnce(inst, Cls);
+  assert.ok(labels.includes("保存") && labels.includes("取消"), "编辑态应渲染保存与取消按钮");
+  // 光有「保存 / 取消」两个标签不够：编辑态必须真的把 Input 挂上去，
+  // 否则画的是一段文本，用户打了字进不去。
+  assert.equal(inputs.length, 1, "编辑态应渲染一个输入框");
+  assert.equal(inputs[0], inst.titleDraft, "输入框应绑定到当前草稿");
+});
+
+test("详情窗：回车保存走 submit，命令把标题放在 `--` 之后", async () => {
+  const { inst, Cls, s } = await loadDetail();
+  await clickTitle(inst, Cls);
+  inst.titleDraft.set_value("-h"); // 用户输入恰好是选项形状
+  const submit = globalThis.__submits.submit;
+  assert.equal(typeof submit, "function", "标题输入框应接 submit（回车才能保存）");
+  submit();
+  await settle();
+  const [, args] = s.execs.at(-1);
+  const dash = args.indexOf("--");
+  assert.ok(dash > -1, `argv 里应有 -- 分隔：${JSON.stringify(args)}`);
+  // `--` 之后是全部位置参数：id 与标题。两者都不是选项语法，所以 `-h` 原样保留。
+  assert.deepEqual(args.slice(dash + 1), ["t1", "-h"], "标题必须是 -- 之后的位置参数");
+  assert.ok(args.includes("title"), "应调用 title 子命令");
+  assert.ok(args.includes("panel"), "应记录 by=panel");
+  assert.equal(inst.titleEditingId, null, "写成功后应退出编辑态");
+});
+
+test("详情窗：点「取消」退出编辑，不写盘", async () => {
+  const { inst, Cls, s } = await loadDetail();
+  await clickTitle(inst, Cls);
+  const { clicks } = await renderDetailOnce(inst, Cls);
+  fire(clicks, "title-cancel");
+  assert.equal(inst.titleEditingId, null, "点取消应退出编辑态");
+  assert.equal(s.execs.length, 0, "点取消不该发任何写命令");
+});
+
+test("详情窗：点「保存」按钮发出的 id 是事项 id，不是可变的编辑态字段", async () => {
+  const { inst, Cls, s } = await loadDetail();
+  await clickTitle(inst, Cls);
+  const { clicks } = await renderDetailOnce(inst, Cls);
+  // 模拟「编辑态在点击前被别的原因退出」：此时旧的 `this.titleEditingId` 是 null。
+  inst.titleEditingId = null;
+  inst.titleDraft = { value: () => "按钮点出来的标题" };
+  fire(clicks, "title-save");
+  await settle();
+  const [, args] = s.execs.at(-1);
+  assert.ok(args, "点保存应发出写命令");
+  assert.ok(!args.includes("null"), `不该把 null 当事项 id 发出去：${JSON.stringify(args)}`);
+  assert.deepEqual(args.slice(args.indexOf("--") + 1), ["t1", "按钮点出来的标题"]);
+});
+
+test("详情窗：空白标题在本地被拦下，不发命令、保留输入并显示原因", async () => {
+  const { inst, Cls, s } = await loadDetail();
+  await clickTitle(inst, Cls);
+  inst.titleDraft.set_value("   ");
+  await inst.commitTitle("t1");
+  await settle();
+  assert.equal(s.execs.length, 0, "空白标题不该发命令（CLI 会附带整份 USAGE，提示塞不进窗口）");
+  assert.equal(inst.titleEditingId, "t1", "被拦下不该退出编辑态");
+  assert.equal(String(inst.titleDraft.value()), "   ", "被拦下不该吞掉用户输入");
+  // 本地校验不写 writeError：那条通道的意思是「写盘失败了」，由写成功后清除。
+  assert.equal(inst.writeError, null, "本地拦截没有写盘，不该占用 writeError");
+  const { labels, parents } = await renderDetailOnce(inst, Cls);
+  const hit = labels.filter((s) => /标题不能为空/.test(s));
+  assert.equal(hit.length, 1, `原因应显示一次：${JSON.stringify(labels)}`);
+  // 位置：必须在头部（挂在 id=title-error 的容器里），不能在滚动区。只断言文本
+  // 存在的话，把它挪回滚动区测试照样会绿——那正是要拦的回归。
+  assert.ok(
+    parents.some(([txt, at]) => txt === hit[0] && at === "title-error"),
+    `提示应挂在头部（title-error）而不是滚动区：${JSON.stringify(parents.filter(([x]) => x === hit[0]))}`,
+  );
+});
+
+test("详情窗：超长标题在本地被拦下并说明字数，不发命令", async () => {
+  const { inst, Cls, s } = await loadDetail();
+  await clickTitle(inst, Cls);
+  inst.titleDraft.set_value("x".repeat(250));
+  await inst.commitTitle("t1");
+  await settle();
+  assert.equal(s.execs.length, 0, "超长标题不该发命令：CLI 会静默截到 200，用户看不到自己打的字");
+  assert.equal(inst.titleEditingId, "t1", "被拦下不该退出编辑态");
+  assert.match(inst.titleProblem, /200/);
+});
+
+test("详情窗：本地拦截的提示在退出编辑后消失", async () => {
+  const { inst, Cls } = await loadDetail();
+  await clickTitle(inst, Cls);
+  inst.titleDraft.set_value("   ");
+  await inst.commitTitle("t1");
+  await settle();
+  assert.ok(inst.titleProblem, "被拦下后应有一次提示");
+  const { clicks } = await renderDetailOnce(inst, Cls);
+  fire(clicks, "title-cancel");
+  assert.equal(inst.titleProblem, null, "退出编辑后不该还挂着「标题不能为空」：那时并没有写入失败");
+  const { labels } = await renderDetailOnce(inst, Cls);
+  assert.ok(!labels.some((s) => /标题不能为空/.test(s)), `提示应已消失：${JSON.stringify(labels)}`);
+});
+
+test("详情窗：Esc 退出编辑同样清掉本地拦截的提示", async () => {
+  const { inst, Cls } = await loadDetail();
+  await clickTitle(inst, Cls);
+  inst.titleDraft.set_value("x".repeat(250));
+  await inst.commitTitle("t1");
+  await settle();
+  const { clicks } = await renderDetailOnce(inst, Cls);
+  clicks.find(([k]) => k === "on_key_down")[1]({ key: "escape" });
+  assert.equal(inst.titleProblem, null, "Esc 退出编辑后提示应消失");
+});
+
+test("详情窗：写失败时保留编辑态与用户输入，并把 CLI 报错显示在窗口里", async () => {
+  // CLI 的用法类错误带整份 USAGE（实测 40 来行）：窗口只能显示第一行。
+  const usages = "herdr-todo: 标题不能为空\n\nherdr-todo — 记录工作事项\n" + "用法行\n".repeat(40);
+  const { inst, Cls } = await loadDetail({ execCode: 2, stderr: usages });
+  await clickTitle(inst, Cls);
+  inst.titleDraft.set_value("写不进去的标题");
+  await inst.commitTitle("t1");
+  await settle();
+  assert.equal(inst.titleEditingId, "t1", "写失败不该退出编辑态");
+  assert.equal(String(inst.titleDraft.value()), "写不进去的标题", "写失败不该吞掉用户输入");
+  const { labels, parents } = await renderDetailOnce(inst, Cls);
+  const hit = labels.filter((s) => /^herdr-todo: 标题不能为空$/.test(s));
+  assert.equal(hit.length, 1, `应只显示报错第一行：${JSON.stringify(labels)}`);
+  assert.ok(!labels.some((s) => /用法行/.test(s)), "整份 USAGE 不该进窗口");
+  assert.ok(
+    parents.some(([txt, at]) => txt === hit[0] && at === "title-error"),
+    "CLI 报错也必须挂在头部（滚动区里看不见）",
+  );
+});
+
+test("详情窗：编辑态按 Esc 只退编辑，再按一次才关窗", async () => {
+  const { inst, Cls, s } = await loadDetail();
+  await clickTitle(inst, Cls);
+  const { clicks } = await renderDetailOnce(inst, Cls);
+  const esc = clicks.find(([k]) => k === "on_key_down");
+  assert.ok(esc, "窗口应接 on_key_down（否则 Esc 关不掉窗）");
+  esc[1]({ key: "escape" });
+  assert.equal(inst.titleEditingId, null, "第一次 Esc 应退出标题编辑");
+  assert.equal(s.closes.length, 0, "第一次 Esc 不该关窗");
+  esc[1]({ key: "escape" });
+  assert.deepEqual(s.closes, ["o1"], "第二次 Esc 才关窗");
+});
+
+test("详情窗：标题编辑与备注编辑互斥（两个方向）", async () => {
+  const { inst, Cls } = await loadDetail();
+  await clickTitle(inst, Cls);
+
+  // 方向一：标题编辑中点「编辑备注」——两个草稿不能同时活着。
+  // 按 id 精确触发：挨个试回调会先点到「取消」，把标题编辑退掉了再进备注，
+  // 断言就永远成立（这正是它必须按 id 定位的原因）。
+  let { clicks, labels } = await renderDetailOnce(inst, Cls);
+  assert.ok(labels.includes("编辑备注"), "详情窗应有「编辑备注」入口");
+  fire(clicks, "note-edit");
+  assert.equal(inst.noteEditingId, "t1", "点「编辑备注」应进入备注编辑");
+  assert.equal(inst.titleEditingId, null, "进备注编辑时应退出标题编辑，否则两个草稿同时活着");
+
+  // 方向二：备注编辑中点标题。
+  ({ clicks } = await renderDetailOnce(inst, Cls));
+  fire(clicks, "todo-title-t1");
+  assert.equal(inst.titleEditingId, "t1", "点标题应进入标题编辑");
+  assert.equal(inst.noteEditingId, null, "进标题编辑时应退出备注编辑");
+});
+
+test("详情窗：窗口一旦拿到键盘，抢焦点的重试就停，不再反复 focus()", async () => {
+  // 拿不到键盘才需要重试。拿到以后还在继续 focus()，等于在后半秒里反复把键盘
+  // 拽回窗口——期间用户切到别的输入框或别的应用都会被抢回来。
+  const { inst, control } = await loadDetail({ pausable: true });
+  let calls = 0;
+  let focused = false;
+  inst.focusHandle = {
+    is_focused: () => focused,
+    focus: () => { calls += 1; focused = true; },
+  };
+  inst.takeFocus();
+  for (let i = 0; i < 5; i++) await step(control);
+  assert.equal(calls, 1, "第一次 focus() 生效后就该退出循环，不该再调用");
+});
+
+test("详情窗：点进标题输入框后，在途的抢焦点重试不会再抢走键盘", async () => {
+  // 把键盘交给窗口本身（保存成功后的行为），但让它的重试还没跑完；
+  // 此时用户点标题进编辑，之后的每一轮都必须放弃——否则用户打的字进不去。
+  const { inst, Cls, control } = await loadDetail({ pausable: true });
+  globalThis.__focused = "frame"; // 窗口已拿到键盘：下一轮循环直接 return
+  inst.focusHandle = { is_focused: () => false, focus: () => { globalThis.__focused = "frame"; } };
+  inst.takeFocus();
+  assert.ok(control.pending.length, "应有在途的重试循环");
+
+  // 移开窗口焦点，让在途循环的下一轮确实会去抢。
+  globalThis.__focused = "input";
+  await clickTitle(inst, Cls);
+  for (let i = 0; i < 3; i++) await step(control);
+  assert.equal(globalThis.__focused, "input", "点进输入框后，在途的 takeFocus() 不该把键盘抢回窗口");
+});
+
+test("详情窗：备注保存回来时不再抢走标题编辑的键盘", async () => {
+  // 备注回车保存在途时点标题进编辑：备注那一轮的 onDone 到达时不能再调
+  // leaveNote()，否则 takeFocus 会把键盘从标题输入框里拉回窗体。
+  let release;
+  globalThis.__execGate = new Promise((r) => { release = r; });
+  const { inst, Cls } = await loadDetail({ slowExec: true });
+
+  const { clicks } = await renderDetailOnce(inst, Cls);
+  fire(clicks, "note-edit");
+  assert.equal(inst.noteEditingId, "t1", "应进入备注编辑");
+  const noteDraft = inst.noteDraft;
+  inst.commitNote("t1"); // 在途
+  await settle();
+
+  // 用户切到标题编辑
+  const r2 = await renderDetailOnce(inst, Cls);
+  fire(r2.clicks, "todo-title-t1");
+  assert.equal(inst.titleEditingId, "t1", "应进入标题编辑");
+  assert.notEqual(inst.noteDraft, noteDraft, "标题编辑应已收掉备注草稿");
+
+  release(); // 备注那一轮写回完成
+  await settle();
+  await settle();
+  assert.equal(inst.noteEditingId, null, "备注不该被「重新打开」");
+  assert.equal(inst.titleEditingId, "t1", "标题编辑态应还在");
+  assert.equal(globalThis.__focused, "input", "键盘应仍在标题输入框，不能被备注的 onDone 抢走");
+});
+
+test("详情窗：上一轮保存回来时不再清掉用户正在编辑的新草稿", async () => {
+  // exec 挂着不返回：用户在第一轮保存「版本A」期间又点开标题、输入「版本B」。
+  // 第一轮的 onDone 到达时不能把第二轮的草稿当成「保存完成」收掉。
+  let release;
+  globalThis.__execGate = new Promise((r) => { release = r; });
+  const { inst, Cls, s } = await loadDetail({ slowExec: true });
+
+  await clickTitle(inst, Cls);
+  inst.titleDraft.set_value("版本A");
+  inst.commitTitle("t1"); // 在途
+  await settle();
+
+  // 清除编辑态，模拟第一轮已经离开（用户点开标题重新编辑）。
+  inst.titleEditingId = null;
+  inst.titleDraft = null;
+  await clickTitle(inst, Cls);
+  inst.titleDraft.set_value("版本B");
+
+  release(); // 第一轮写回完成
+  await settle();
+  await settle();
+  assert.ok(s.execs.length >= 1, "第一轮应已发出命令");
+  assert.equal(inst.titleDraft?.value?.(), "版本B", "第一轮的 onDone 不能吞掉第二轮输入");
+  assert.equal(inst.titleEditingId, "t1", "第二轮编辑态应还活着");
+});

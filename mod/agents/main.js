@@ -3,7 +3,7 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, checking, watchFolder, notify } from "herdr";
-import { read, command, dataDir } from "./store.js";
+import { read, command, dataDir, sync } from "./store.js";
 import { deriveAgents } from "./todo-view.js";
 import { readDrag, beginDrag, endDrag, staleOnPress, dragGhost, learnRoot } from "./todo-drag.js";
 
@@ -566,6 +566,18 @@ function priorityColor(p, t) {
   return t.dim;
 }
 
+/**
+ * 「数据库不可达，显示的是 X 前的缓存」。与侧栏同一句文案（F8）。
+ * lastPullAt 取自 sync.json 的 last_pull_at = 最后一次**成功 pull** 的时间；
+ * 缺失时如实说「尚未同步成功」，不编造时间。
+ */
+function syncStaleText(s) {
+  const when = s && s.lastPullAt ? `${relTime(s.lastPullAt)}（${new Date(s.lastPullAt).toLocaleString()}）` : null;
+  return when
+    ? `数据库不可达，显示的是 ${when} 的缓存`
+    : "数据库不可达，尚未同步成功过（显示的是本地残留缓存）";
+}
+
 const AgentsTodo = Agents.prototype;
 
 // ---------- 数据 ----------
@@ -582,6 +594,11 @@ AgentsTodo.render = function todoRender(cx) {
 
   const body = upstreamRender.call(this, cx);
   if (props()?.sortMenu) return body;
+  // 拉取失败时在顶部加一行：缓存还能读，但用户需要知道看到的是旧的。
+  // 不清空列表——那会把「暂时连不上」表现成「一条待办都没有」。
+  const stale = this.todoSync && !this.todoSync.ok
+    ? [div().id("todo-sync-error").px(6).py(3).text_size(10).text_color(theme().dim).child(syncStaleText(this.todoSync))]
+    : [];
   // 与侧栏同一套：根元素 relative + 跟随标签；指针事件学习根矩形；按下作废旧手势。
   const ghost = drag ? dragGhost(drag, this.todoRoot, theme()) : null;
   return v_flex()
@@ -602,6 +619,7 @@ AgentsTodo.render = function todoRender(cx) {
     .on_size_change((size) => {
       this.todoRoot = { ...(this.todoRoot ?? { x: 0, y: 0 }), w: size.width, h: size.height };
     })
+    .children(stale)
     .child(body)
     .when(Boolean(ghost), (el) => el.child(ghost));
 };
@@ -614,6 +632,10 @@ AgentsTodo.init = function todoInit(p, cx) {
 
   this.todoState = null;
   this.todoError = null;
+  // 同步状态：{ ok, error, lastPullAt } 或 null。拉取失败不抛穿，只记下来。
+  this.todoSync = null;
+  // 在途标记：同一时间只跑一个 pull（两个 mod 各自持有一个，彼此独立）。
+  this.todoSyncing = false;
   this.todoExpanded = new Set();
   // 正在被拖过来的待办（来自 shared）：用来高亮投放目标。
   // 侧栏写 shared 时每个 mod 都会收到重渲染，所以这里不必轮询。
@@ -626,7 +648,28 @@ AgentsTodo.init = function todoInit(p, cx) {
   this._todoByAgent = null;
   this.todoLoad(cx);
   this.todoWatch(cx);
-  cx.timer.every(10000, (cx2) => this.todoLoad(cx2));
+  // 先 pull 再读缓存：顺序反过来会先画上一轮的旧内容，多一次闪烁。
+  cx.timer.every(10000, (cx2) => this.todoSync2(cx2));
+};
+
+/**
+ * 一轮同步 + 重读。在途时直接返回，不排队——10 秒后还有下一轮。
+ *
+ * 单独一个方法而不是塞进 todoLoad：todoLoad 也被 watchFolder 与本 mod 自己的
+ * 写后刷新调用，那些场合不需要（也不该）触发同步。
+ */
+AgentsTodo.todoSync2 = function todoSync2(cx) {
+  if (checking()) return;
+  if (this.todoSyncing) return;
+  this.todoSyncing = true;
+  cx.spawn(async (cx2) => {
+    try {
+      this.todoSync = await sync();
+    } finally {
+      this.todoSyncing = false;
+    }
+    await this.todoLoad(cx2);
+  });
 };
 
 AgentsTodo.todoLoad = function todoLoad(cx) {

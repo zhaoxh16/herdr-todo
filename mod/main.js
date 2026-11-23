@@ -26,6 +26,12 @@ import { spaces, agents, theme, props, closeOverlay, checking, watchFolder } fro
 import { findItem, timelineOf, CLOSED_STATUSES, STATUSES, PRIORITIES } from "./core.js";
 import { read, command, dataDir } from "./store.js";
 
+// 标题长度上限。**必须与 src/rules.js 的 TITLE_MAX 一致**：规则层对超长标题会
+// 拒绝，界面前置拦下只是让用户不必等一次失败的写。为什么不从 core 导出：那会
+// 给数据层加一个只服务界面的公开常量。两处一致性由 tests/sync.test.js 的用例
+// 守着，改一处漏改另一处会直接红。
+const TITLE_MAX = 200;
+
 const STATUS_LABEL = {
   todo: "待办",
   doing: "进行中",
@@ -49,6 +55,17 @@ function relTime(ms) {
 
 function listText(v, sep) {
   return Array.isArray(v) ? v.join(sep) : v == null ? "" : String(v);
+}
+
+/**
+ * CLI 报错的第一行。
+ *
+ * 用法类错误（空标题就是）会附带整份 USAGE，一千多字、四十来行；原样塞进窗口
+ * 就是一面字墙，用户连「这次成没成」都读不出来。第一行（`herdr-todo: …`）才是
+ * 这次失败的原因，其余是帮终端用户查语法的。
+ */
+function firstLine(msg) {
+  return String(msg ?? "").split("\n")[0].trim();
 }
 
 function describeEntry(e) {
@@ -129,6 +146,15 @@ export default class Todo extends View {
     this.readError = null;
     this.noteDraft = null;
     this.noteEditingId = null;
+    // 标题编辑态。与备注编辑互斥，见 enterTitle() / enterNote()。
+    this.titleDraft = null;
+    this.titleEditingId = null;
+    // 本地校验（空 / 超长）的提示。与 writeError 分开：它标记的不是「写盘失败」，
+    // 退出编辑或下一次提交时就该消失，见 leaveTitle()。
+    this.titleProblem = null;
+    // takeFocus() 的令牌：每申请一次焦点自增。用户点进某个输入框时它一增，
+    // 在途的重试循环就作废——否则那几轮会把键盘从刚点开的输入框里抢回去。
+    this.focusSeq = 0;
 
     if (this.mode === "capture") {
       this.draft = InputState.new({ placeholder: "要做什么？回车创建" });
@@ -162,8 +188,12 @@ export default class Todo extends View {
    */
   takeFocus() {
     if (checking() || !this.focusHandle) return;
+    // 令牌：用户点进输入框时 relinquishFocus() 会把它加一，这里在途的循环立刻作废。
+    // 没有它，保存成功后申请的那几轮重试会把键盘从用户刚点开的输入框里抢回来。
+    const seq = ++this.focusSeq;
     this.cx.spawn(async (c) => {
       for (let i = 0; i < 20; i++) {
+        if (seq !== this.focusSeq) return;
         try {
           if (this.focusHandle.is_focused()) return;
           this.focusHandle.focus();
@@ -174,6 +204,11 @@ export default class Todo extends View {
         await c.sleep(30);
       }
     });
+  }
+
+  /** 把键盘让给某个输入框：作废在途的 takeFocus() 重试（见那里的令牌注释）。 */
+  relinquishFocus() {
+    this.focusSeq += 1;
   }
 
   /** 退出备注编辑：清掉草稿，把键盘从输入框收回窗口（否则 Esc 要按两次）。 */
@@ -245,6 +280,14 @@ export default class Todo extends View {
   /** 界面上要显示的错误：写入失败优先（它是用户刚做的操作的结果）。 */
   errorText() {
     return this.writeError ?? this.readError ?? null;
+  }
+
+  /**
+   * 详情窗头部那条提示。本地校验排在写盘错误之前：它总是「刚刚这一次提交」
+   * 的结论，比上一次写盘失败更贴近用户当下的动作。
+   */
+  shownError() {
+    return this.titleProblem ?? this.errorText();
   }
 
   /**
@@ -373,7 +416,11 @@ export default class Todo extends View {
   renderDetailWindow(cx) {
     const t = theme();
     const err = this.errorText();
-    const header = (title, body) =>
+    // `title` 是固定文本（载入中/读失败/事项不存在三个分支），`titleEl` 是可编辑的
+    // 标题元素（详情主分支才有）。二者只传其一，避免三个分支也长出编辑入口。
+    // `badge` 是 `#12` 形式的编号：命令行按编号寻址，面板不显示它，用户就无从
+    // 知道该敲哪个号（spec §4.2 要求编号进缓存正是为了这里）。
+    const header = ({ title, titleEl, editing, badge }, body) =>
       v_flex()
         .px(12)
         .pt(10)
@@ -385,14 +432,27 @@ export default class Todo extends View {
           h_flex()
             .items_center()
             .gap(8)
-            .child(div().flex_1().truncate().text_size(13).font_semibold().text_color(t.foreground).child(title))
+            .children(
+              badge
+                ? [
+                    div()
+                      .id("detail-num")
+                      .flex_shrink_0()
+                      .text_size(11)
+                      .text_color(t.dim)
+                      .tooltip("命令行里用它指这条事项")
+                      .child(badge),
+                  ]
+                : [],
+            )
+            .child(div().flex_1().min_w(0).child(editing ? titleEl : (titleEl ?? title)))
             .child(button("✕", t, false, () => closeOverlay(this.overlayId))),
         )
-        .children(body ?? []);
+        .children((body ?? []).filter(Boolean));
 
     if (!this.state && err) {
       return this.detailFrame(t, [
-        header("待办详情"),
+        header({ title: "待办详情" }),
         v_flex().p(12).gap(6)
           .child(div().text_size(12).text_color(t.ansi1).child("数据读取失败"))
           .child(div().text_size(11).text_color(t.muted).child(err)),
@@ -400,7 +460,7 @@ export default class Todo extends View {
     }
     if (!this.state) {
       return this.detailFrame(t, [
-        header("待办详情"),
+        header({ title: "待办详情" }),
         v_flex().p(12).child(div().text_size(12).text_color(t.muted).child("载入中…")),
       ]);
     }
@@ -410,25 +470,181 @@ export default class Todo extends View {
       // 只有删掉才会让 findItem 落空——归档只是打标记，事项还在。
       // 说清楚，别显示一个空窗。
       return this.detailFrame(t, [
-        header("待办详情"),
+        header({ title: "待办详情" }),
         v_flex().p(12).child(div().text_size(12).text_color(t.muted).child("这条待办已不存在（可能刚被删除）。")),
       ]);
     }
 
+    const editing = this.titleEditingId === item.id && this.titleDraft;
     return this.detailFrame(
       t,
       [
-        header(item.title, [
+        header({
+          editing: Boolean(editing),
+          badge: item.num != null ? `#${item.num}` : null,
+          titleEl: editing ? this.renderTitleEditor(item, editing, t) : this.renderTitleText(item, t),
+        }, [
           div().text_size(10).text_color(t.dim).child(`更新于 ${relTime(item.updated)}`),
+          // 错误提示挂在头部（滚动区之外）：写失败时窗口的滚动位置在顶部，
+          // 放在滚动区里用户根本看不到「保存被拒了」。只显示第一行——CLI 的
+          // 用法类错误会附带整份 USAGE，四十来行塞进来等于没有提示。
+          // `titleProblem` 是本地校验（空 / 超长）的结果，与写盘失败分开：
+          // 两者都只显示第一行，且都在这个固定可见的位置。
+          this.shownError()
+            ? div()
+                .id("title-error")
+                .text_size(11)
+                .text_color(t.ansi1)
+                .child(firstLine(this.shownError()))
+            : null,
         ]),
-        v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(12).gap(8).children(
-          [
-            err ? div().text_size(11).text_color(t.ansi1).child(err) : null,
-            this.renderDetail(item, t, cx),
-          ].filter(Boolean),
-        ),
+        v_flex()
+          .id("detail-scroll")
+          .flex_1()
+          .min_h(0)
+          .overflow_y_scrollbar()
+          .p(12)
+          .gap(8)
+          .child(this.renderDetail(item, t, cx)),
       ],
     );
+  }
+
+  /**
+   * 详情窗头部的标题（非编辑态）：**点它自己**就进编辑态，没有单独的按钮。
+   *
+   * `on_mouse_down` + `stop_propagation` 不是可选的：window 形态的拖动由任意
+   * 未被阻止的按下发起（见文件末尾 button() 的注释），不拦住按下，点标题会被
+   * 当成拖窗口，`on_click` 根本收不到。
+   * 悬停底色与 tooltip 让「可点」在点之前就看得出来——否则它看起来和只读文字一样。
+   */
+  renderTitleText(item, t) {
+    return div()
+      .id(`todo-title-${item.id}`)
+      .flex_1()
+      .min_w(0)
+      .truncate()
+      .text_size(13)
+      .font_semibold()
+      .text_color(t.foreground)
+      .rounded(4)
+      .px(2)
+      .hover((s) => s.bg(t.hover))
+      .tooltip("点击修改标题")
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click(() => this.enterTitle(item))
+      .child(item.title);
+  }
+
+  /**
+   * 编辑态：输入框 + 保存 / 取消。
+   *
+   * 输入框要画自己的底色与边框（与快速记录窗同一个形状）：`Input` 本身没有
+   * 可见边界，不画的话编辑态看起来还是那行文字，用户不知道字打到哪里去了。
+   *
+   * `stop_propagation` 与标题文字同理——输入框里按下不能被当成拖窗口。
+   */
+  renderTitleEditor(item, draft, t) {
+    return h_flex()
+      .flex_1()
+      .min_w(0)
+      .gap(6)
+      .items_center()
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(
+        div()
+          .flex_1()
+          .min_w(0)
+          .px(6)
+          .py(3)
+          .rounded(6)
+          .bg(t.input)
+          .border(1)
+          .border_color(t.border)
+          .child(Input.new(draft)),
+      )
+      // 按 id 而不是 this.titleEditingId：回调在点击时求值，那时编辑态可能已经
+      // 因为别的原因退出，this.titleEditingId 是 null，会发出 `title null …`。
+      .child(button("保存", t, true, () => this.commitTitle(item.id), "title-save"))
+      .child(button("取消", t, false, () => this.leaveTitle(), "title-cancel"));
+  }
+
+  /**
+   * 进入标题编辑。与备注编辑互斥（两个方向都要拦，见 enterNote）。两个草稿同时
+   * 活着时，Esc 该先收哪一个会变得不可解释，而且两者的「保存」按钮长得一样，
+   * 用户分不清按了哪个。
+   *
+   * InputState.new 需要一次宿主调用，所以只能在事件处理器里建（与备注一致）。
+   */
+  enterTitle(item) {
+    if (this.titleEditingId) return;
+    // 切换编辑器时直接清掉另一份草稿，不走 leaveNote()：那个函数会把键盘还给
+    // 窗口，而这里紧接着就要交给新的输入框。
+    this.noteEditingId = null;
+    this.noteDraft = null;
+    this.titleProblem = null;
+    this.titleEditingId = item.id;
+    this.titleDraft = InputState.new({ value: item.title ?? "" });
+    this.titleDraft.on("submit", () => this.commitTitle(item.id));
+    this.titleDraft.focus();
+    // 键盘已经交给输入框：作废在途的 takeFocus()，否则它下一轮又把键盘抢回去。
+    this.relinquishFocus();
+    this.cx.notify();
+  }
+
+  /**
+   * 退出标题编辑：清草稿，把键盘收回窗口（否则 Esc 要按两次）。
+   *
+   * 同时清掉本地拦截留下的提示：那是「这次输入不符合要求」，只在编辑态里有
+   * 意义。留着它，用户点「取消」之后窗口还会一直说「标题不能为空」——而那时
+   * 根本没有一次失败的写入。
+   */
+  leaveTitle() {
+    this.titleEditingId = null;
+    this.titleDraft = null;
+    this.titleProblem = null;
+    this.takeFocus();
+    this.cx.notify();
+  }
+
+  /**
+   * 保存标题。只有写成功才收起编辑器——失败时保留用户刚输入的内容，
+   * 否则一句「标题不能为空」就把输入丢了。
+   *
+   * 空标题与超长标题在这里就拦下，不发进程：CLI 把「空标题」当用法错误
+   * （UsageError），stderr 会附带整份 USAGE，一千多字塞进窗口等于没有提示；
+   * 超长标题 CLI 也会拒绝，前置拦下只是让提示留在输入框旁边。
+   * 上限只从 core 取，不在这里再写一遍 200。
+   *
+   * 标题走 `--` 之后的位置参数（command() 负责），所以叫 `-h` 或 `--space`
+   * 的标题也能原样保存，不会被当成选项。
+   */
+  commitTitle(id) {
+    // draft 是这一轮渲染时挂上的那个草稿对象；id 由调用方捕获，不读可变字段
+    // this.titleEditingId（点击时它可能已经是 null，会发出 `title null …`）。
+    const draft = this.titleDraft;
+    if (!draft) return;
+    const text = String(draft.value?.() ?? "").trim();
+    const problem = !text
+      ? "标题不能为空"
+      : text.length > TITLE_MAX
+        ? `标题最多 ${TITLE_MAX} 字（当前 ${text.length} 字），没有保存`
+        : null;
+    if (problem) {
+      // 单独存，不塞进 writeError：那条通道的语义是「某次写盘失败了」，
+      // 由 spawn 成功后清除。本地拦截压根没发命令，混进去会让提示赖着不走。
+      this.titleProblem = problem;
+      this.cx.notify();
+      return;
+    }
+    this.mutate(["title", id, text], {
+      onDone: () => {
+        // 写回期间用户可能又点开标题重新编辑（保存慢时）。那时新草稿还活着，
+        // 这一轮的 onDone 不能当成「当前编辑结束了」，否则会吞掉新输入。
+        if (this.titleDraft !== draft) return;
+        this.leaveTitle();
+      },
+    });
   }
 
   /**
@@ -444,7 +660,12 @@ export default class Todo extends View {
       .track_focus(this.focusHandle)
       .on_key_down((e) => {
         if (e.key !== "escape") return;
-        // 先结束备注编辑再关窗：备注没保存就关掉会丢掉刚输入的内容。
+        // 先结束编辑再关窗：没保存就关掉会丢掉刚输入的内容。标题与备注互斥，
+        // 但两个分支都留着——用户可能在两次编辑之间切换过。
+        if (this.titleEditingId) {
+          this.leaveTitle();
+          return;
+        }
         if (this.noteEditingId) {
           this.leaveNote();
           return;
@@ -580,16 +801,29 @@ export default class Todo extends View {
           .child(item.note ? item.note.split("\n")[0] : "（无备注）"),
       )
       .child(
-        button("编辑备注", t, false, () => {
-          // 状态在这里建：InputState/TextareaState.new 需要一次宿主调用，
-          // 不能在 render 里做（宿主会直接抛错，整个窗口渲染失败）。
-          this.noteEditingId = item.id;
-          this.noteDraft = TextareaState.new({ value: item.note ?? "", rows: 4 });
-          this.noteDraft.on("submit", () => this.commitNote(item.id));
-          this.noteDraft.focus();
-          this.cx.notify();
-        }),
+        button("编辑备注", t, false, () => this.enterNote(item), "note-edit"),
       );
+  }
+
+  /**
+   * 进入备注编辑。`InputState`/`TextareaState.new` 需要一次宿主调用，所以
+   * 只能在事件处理器里建（render 里做宿主会直接抛错，整个窗口渲染失败）。
+   *
+   * 与标题编辑互斥，两个方向都要拦：只拦「进标题时退备注」，标题编辑中再点
+   * 这里就会两个编辑器同时活着——Esc 一次收掉两个、备注输入被后来保存的那次覆盖。
+   */
+  enterNote(item) {
+    if (this.noteEditingId) return;
+    this.titleEditingId = null;
+    this.titleDraft = null;
+    this.titleProblem = null;
+    this.noteEditingId = item.id;
+    this.noteDraft = TextareaState.new({ value: item.note ?? "", rows: 4 });
+    this.noteDraft.on("submit", () => this.commitNote(item.id));
+    this.noteDraft.focus();
+    // 与 enterTitle 同理：键盘已交给输入框，作废在途的 takeFocus()。
+    this.relinquishFocus();
+    this.cx.notify();
   }
 
   /**
@@ -597,12 +831,20 @@ export default class Todo extends View {
    * 否则一句「数据文件一直被其他进程改写」就把输入丢了。
    */
   commitNote(id) {
-    const text = String(this.noteDraft?.value?.() ?? "");
+    const draft = this.noteDraft;
+    if (!draft) return;
+    const text = String(draft.value?.() ?? "");
     // 备注正文走 --note= 单 token：正文可能是 `--space x`、`-h` 这种文本，
     // 作为位置参数会被当成选项语法。
     this.mutate(["note", id], {
       flags: [`--note=${text}`],
-      onDone: () => this.leaveNote(),
+      onDone: () => {
+        // 与 commitTitle 同一套身份检查：写回期间用户可能已经切到标题编辑。
+        // 那时 leaveNote 不但会清掉一份已经没人看的草稿，还会通过 takeFocus
+        // 把键盘从用户正打字的标题输入框里抢走。
+        if (this.noteDraft !== draft) return;
+        this.leaveNote();
+      },
     });
   }
 
@@ -627,10 +869,13 @@ export default class Todo extends View {
 // 不稳定，命中测试与 UI 自动化都没法按 id 定位同一个按钮。序号在 render()
 // 开头归零，所以同一份状态下渲染出的 id 逐次一致。
 let buttonSeq = 0;
-function button(label, t, active, onClick) {
+// id 可以显式指定：同一个标签在窗口里可能出现多次（状态里的「取消」和编辑器的
+// 「取消」），按标签排查或点选时只能靠序号，而序号随渲染里的其它按钮漂移。
+// 需要稳定身份的地方（标题编辑器的保存/取消）传自己的 id。
+function button(label, t, active, onClick, id) {
   buttonSeq += 1;
   return h_flex()
-    .id(`btn-${label}-${buttonSeq}`)
+    .id(id ?? `btn-${label}-${buttonSeq}`)
     .px(6)
     .py(2)
     .rounded(4)

@@ -10,7 +10,7 @@ import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 // 必须加回去——漏掉任何一个都会在 init 或右键时抛 ReferenceError，而
 // herdr-app check 因为 checking() 短路与不执行 menu() 而照样报 passed。
 import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, checking, agents, appHome, readTextFile } from "herdr"; // [herdr-todo]
-import { read, command, dataDir } from "./store.js";
+import { read, command, dataDir, sync } from "./store.js";
 import { deriveSidebar } from "./todo-view.js";
 import { DRAG_KEY, readDrag, beginDrag, endDrag, staleOnPress, dragGhost, learnRoot } from "./todo-drag.js";
 
@@ -665,6 +665,20 @@ function priorityColor(p, t) {
   return t.dim;
 }
 
+/**
+ * 「数据库不可达，显示的是 X 前的缓存」。
+ *
+ * F8 的判据：拉取失败时明确说陈旧，不清空列表，也不编造时间。`lastPullAt`
+ * 来自 sync.json 的 last_pull_at（**最后一次成功 pull**），不是缓存的写入时间——
+ * 本机写只让一条事项变新，不代表整份缓存新鲜。没有这个字段时如实说「尚未同步成功」。
+ */
+function syncStaleText(s) {
+  const when = s && s.lastPullAt ? `${relTime(s.lastPullAt)}（${new Date(s.lastPullAt).toLocaleString()}）` : null;
+  return when
+    ? `数据库不可达，显示的是 ${when} 的缓存`
+    : "数据库不可达，尚未同步成功过（显示的是本地残留缓存）";
+}
+
 const SpacesTodo = Spaces.prototype;
 
 // ---------- 数据 ----------
@@ -693,6 +707,12 @@ SpacesTodo.init = function todoInit(p, cx) {
   // 的指针事件（position − local_position）与 on_size_change 学到并缓存。
   this.todoRoot = null;
 
+  // 同步状态：{ ok, error, lastPullAt } 或 null（还没同步过）。
+  // 拉取失败不抛穿——侧栏要一直能用缓存，只在顶部显示一行「显示的是几点前的缓存」。
+  this.todoSync = null;
+  // 在途标记：10 秒 tick 与 watchFolder 都可能触发，同一时间只跑一个 pull，
+  // 否则多个请求会在同一把本地文件锁上排队白等。
+  this.todoSyncing = false;
   this.todoLoad(cx);
   this.todoWatch(cx);
   // 兜底轮询：watchFolder 在个别文件系统上可能漏事件，低频重读保证最终一致。
@@ -718,7 +738,29 @@ SpacesTodo.init = function todoInit(p, cx) {
     }
   });
   // 原来的 10 秒读账本保底还得留：watchFolder 漏事件时它才是最终一致的那一环。
-  cx.timer.every(10000, (cx2) => this.todoLoad(cx2));
+  // 10 秒 tick：先 pull 再读缓存。顺序不能反——先读会把上一轮的旧内容画上去，
+  // 多一次闪烁；而 pull 失败时读到的仍是缓存，行为与迁移前一致。
+  cx.timer.every(10000, (cx2) => this.todoSync2(cx2));
+};
+
+/**
+ * 一轮同步 + 重读。**串行化**：在途时直接返回，不排队——10 秒后还有下一轮，
+ * 排队只会让恢复变慢。失败时把原因记进 todoSync，由渲染层显示一行提示。
+ */
+SpacesTodo.todoSync2 = function todoSync2(cx) {
+  if (checking()) return;
+  if (this.todoSyncing) return;
+  this.todoSyncing = true;
+  cx.spawn(async (cx2) => {
+    try {
+      const r = await sync();
+      this.todoSync = r;
+    } finally {
+      this.todoSyncing = false;
+    }
+    // 不论成功失败都要重读缓存：失败时缓存可能是别的路径（CLI 同机写入）刚更新的。
+    await this.todoLoad(cx2);
+  });
 };
 
 SpacesTodo.todoLoad = function todoLoad(cx) {
@@ -1147,6 +1189,19 @@ SpacesTodo.grouped = function todoGroupedWrap(t, collapsed) {
   const errorLine = this.todoError
     ? [div().id("todo-error").px(8).py(3).text_size(10).text_color(t.ansi1).child(this.todoError)]
     : [];
+  // 拉取失败单独一行：缓存本身可能读得好好的，用户需要知道「看到的是旧的」。
+  // 不清空列表——那会把「暂时连不上」表现成「一条待办都没有」。
+  if (this.todoSync && !this.todoSync.ok) {
+    errorLine.push(
+      div()
+        .id("todo-sync-error")
+        .px(8)
+        .py(3)
+        .text_size(10)
+        .text_color(t.dim)
+        .child(syncStaleText(this.todoSync)),
+    );
+  }
 
   // 上游用 this.activeAt 告诉 render()「活动 space 是第几个直接子元素」，
   // 由它 scroll_to_item 滚进视野。这里在前面插了 errorLine + head 两段，

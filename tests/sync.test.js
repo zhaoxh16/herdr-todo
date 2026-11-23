@@ -35,9 +35,25 @@ test("mod/core.js 与 src/core.js 同步（哈希头 + 正文一致）", async (
 
 test("mod/core.js 可被 Node 直接加载（没有导入宿主 API）", async () => {
   const m = await import(MOD);
-  for (const name of ["addItem", "setStatus", "setSpaces", "archiveItem", "normalizeState"]) {
+  // 只读侧导出的名字。写侧已移到 src/rules.js（不进 mod 副本：面板不写数据，
+  // 写一律走 CLI），所以这里只钉读侧契约。
+  for (const name of ["normalizeState", "emptyState", "sortItems", "groupBySpace", "summary", "findItem", "timelineOf", "sortByRecent"]) {
     assert.equal(typeof m[name], "function", `${name} 应从 mod/core.js 导出`);
   }
+});
+
+// 详情窗要在发命令之前拦下超长标题，让提示留在输入框旁边，而不必等一次失败的写
+// （规则层对超长是报错，不是截断）。上限在 mod/main.js 里是本地常量，因为
+// 它不是数据层语义、不该成为 core 的公开 API。代价是两处手写值必须一致：
+// 规则层改了而界面没改，界面就会放行一个注定被 CLI 拒绝的标题。
+test("mod/main.js 的标题上限与 src/rules.js 的 TITLE_MAX 一致", async () => {
+  const rules = await fs.readFile(path.join(ROOT, "src", "rules.js"), "utf8");
+  const main = await fs.readFile(path.join(ROOT, "mod", "main.js"), "utf8");
+  const want = /^const TITLE_MAX = (\d+);$/m.exec(rules);
+  assert.ok(want, "src/rules.js 应有 `const TITLE_MAX = <数字>;`");
+  const got = /^const TITLE_MAX = (\d+);$/m.exec(main);
+  assert.ok(got, "mod/main.js 应有本地 `const TITLE_MAX = <数字>;`（界面据此前置拦截）");
+  assert.equal(got[1], want[1], `两侧标题上限不一致：rules=${want[1]} / 界面=${got[1]}`);
 });
 
 test("侧栏副本与 mod/core.js 一致（同源同哈希）", async () => {
@@ -228,7 +244,7 @@ test("Agents 栏 mod 的模块都能被 Node 解析（语法）", () => {
 });
 
 test("安装脚本语法合法（sh -n）", () => {
-  for (const f of ["install.sh", "scripts/sync-core.sh", "tests/cli.test.sh"]) {
+  for (const f of ["install.sh", "scripts/sync-core.sh", "tests/cli.test.sh", "db/create.sh"]) {
     const r = spawnSync("sh", ["-n", path.join(ROOT, f)], { encoding: "utf8" });
     assert.equal(r.status, 0, `${f} 语法错误：${r.stderr}`);
   }
@@ -240,7 +256,7 @@ test("安装脚本语法合法（sh -n）", () => {
  * 这类字符串都出现在报错/提示行里，平时跑不到，正好藏在升级路径上。
  */
 test("shell 脚本里变量后面不紧跟全角字符", async () => {
-  const files = ["install.sh", "scripts/sync-core.sh", "tests/cli.test.sh"];
+  const files = ["install.sh", "scripts/sync-core.sh", "tests/cli.test.sh", "db/create.sh"];
   for (const f of files) {
     const text = await fs.readFile(path.join(ROOT, f), "utf8");
     text.split("\n").forEach((line, i) => {

@@ -1,11 +1,13 @@
 // mod 侧存储。读走 readTextFile（沙箱内唯一能读 home 的方式）；
 // **写一律交给 herdr-todo 命令行**。
 //
-// 为什么不自己写：CLI 用 mkdir 锁目录串行化读-改-写，而这个 mod 过去走
+// 为什么不自己写：CLI 的写路径是「事务改库 → 原子重写缓存」，而这个 mod 过去走
 // writeTextFile 的无锁 CAS。两者互不认识——CLI 读到 R、面板 CAS 提交 R'、
 // CLI 比对仍是 R 于是 rename 覆盖 R'，双方都报成功，面板那条静默消失。
-// 给 mod 再补一套锁只会让两个实现继续分叉。写操作只留一条路径，
-// 锁与 CAS 就只有一份，这类竞争从结构上不存在。
+// 给 mod 再补一套锁只会让两个实现继续分叉。写操作只留一条路径，就只剩一份锁。
+//
+// 数据现在在 MySQL，todos.json 只是**派生缓存**。面板读它（快、无需网络），
+// 定期调 `herdr-todo pull` 把它刷新。拉取失败时面板显示缓存时间，不静默装新。
 //
 // 代价：面板编辑需要 herdr-todo 装在 ~/.local/bin（install.sh 装到那里）。
 // 用绝对路径而不是 PATH 上的名字：App 启动时的 PATH 与登录 shell 不一定相同。
@@ -14,6 +16,7 @@ import { readTextFile, exec, home } from "herdr";
 import { normalizeState, emptyState } from "./core.js";
 
 export const DATA_PATH = `${home()}/.local/share/herdr-todo/todos.json`;
+export const SYNC_PATH = `${home()}/.config/herdr-todo/sync.json`;
 
 // 只留一个候选。列两个（绝对路径 + PATH 上的名字）在默认安装下指向同一个文件，
 // 一次超时会被重试成两条写操作——而写是「加一条事项」，重试就是不想要的重复。
@@ -21,6 +24,8 @@ const CLI = `${home()}/.local/bin/herdr-todo`;
 
 export class ConflictError extends Error {}
 export class CliMissingError extends Error {}
+/** 数据库不可达（CLI 退出码 4）。与「命令本身失败」分开，界面才能说人话。 */
+export class UnreachableError extends Error {}
 
 async function readRaw(path) {
   let text;
@@ -80,16 +85,18 @@ export async function read(path = DATA_PATH) {
  * - 面板自己的选项放在子命令**之前**：解析器扫描整个 argv，放哪都能识别，
  *   但放在前面就不会被下面那个 `--` 变成位置参数。
  * - `--` 之后的都是数据。用户标题完全可能就叫 `-h`、`--` 或 `--space`；
- *   不隔开的话这三种会分别变成「打印帮助并成功退出」「吞掉面板的选项并写到
- *   默认账本」「标题与 space 对调」，而且都 exit 0。
+ *   不隔开的话这三种会分别变成「打印帮助并成功退出」「吞掉面板的选项」「标题
+ *   与 space 对调」，而且都 exit 0。
  * - 值里可能含 `=`/`--` 的选项一律用 `--key=value` 单 token 传入，避免
  *   用户文本被当成键。
+ *
+ * 连接参数（--db / HERDR_TODO_DSN）不在 argv 里：面板没有、也不该有数据库口令，
+ * 它靠 CLI 读 ~/.config/herdr-todo/config.json。
  */
 export async function command(args, options = {}) {
-  const path = options.path ?? DATA_PATH;
   const flags = options.flags ?? [];
   const [sub, ...rest] = args.map(String);
-  const argv = ["--json", "--by", "panel", `--file=${path}`, ...flags, sub, "--", ...rest];
+  const argv = ["--json", "--by", "panel", ...flags, sub, "--", ...rest];
 
   let r;
   try {
@@ -112,9 +119,42 @@ export async function command(args, options = {}) {
     return r.stdout;
   }
   const msg = (r.stderr || r.stdout || "").trim();
-  // 退出码 3 是 CLI 的写入冲突（锁超时 / 比对失败），单独建模好让 UI 说人话。
-  if (r.code === 3) throw new ConflictError(msg || "数据文件正在被其他进程改写");
+  if (r.code === 4) {
+    throw new UnreachableError(msg || "数据库不可达");
+  }
+  // 退出码 3 是本地缓存冲突（锁超时）。保留旧建模，让 UI 说「稍后重试」。
+  if (r.code === 3) throw new ConflictError(msg || "本地缓存正在被其他进程改写");
   throw new Error(msg || `herdr-todo ${sub} 失败（退出码 ${r.code}）`);
+}
+
+/**
+ * 拉取其它设备的改动。返回 { ok, error, lastPullAt }，**不抛**——面板的轮询
+ * 是周期性的，一次失败不该让整个侧栏变成错误状态；调用方据此显示一行提示。
+ *
+ * 同一时间只跑一个：传进来的 inflight 标记由调用方持有（见两个侧栏的 tick）。
+ * 这里再挡一次是不想让「面板打开多个实例」变成多份并发 pull（它们会在
+ * 同一把本地文件锁上排队，白等）。
+ */
+export async function sync() {
+  try {
+    const stdout = await command(["pull"]);
+    const lastPullAt = readSyncFileLastPullAt(await readRaw(SYNC_PATH));
+    return { ok: true, error: null, lastPullAt, stdout };
+  } catch (e) {
+    const lastPullAt = readSyncFileLastPullAt(await readRaw(SYNC_PATH).catch(() => null));
+    return { ok: false, error: String(e?.message ?? e), lastPullAt };
+  }
+}
+
+/** 从 sync.json 里取 last_pull_at。解析失败当没有——它只用于显示一行提示。 */
+function readSyncFileLastPullAt(raw) {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw).last_pull_at;
+    return Number.isFinite(Number(v)) ? Number(v) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function dataDir() {

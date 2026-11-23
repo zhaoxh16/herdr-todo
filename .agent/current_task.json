@@ -1,7 +1,7 @@
 {
-  "task": "codebuddy-open",
-  "task_dir": ".agent/codebuddy-open",
-  "plan_path": ".agent/codebuddy-open/plan.md",
+  "task": "todo-cloud-mysql",
+  "task_dir": ".agent/todo-cloud-mysql",
+  "plan_path": ".agent/todo-cloud-mysql/plan.md",
   "updated_by": "execute-plan",
-  "updated_at": "2026-11-20T18:45:03+08:00"
+  "updated_at": "2026-11-23T16:56:00+08:00"
 }
