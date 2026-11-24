@@ -610,7 +610,16 @@ export default class Spaces extends View {
           .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always").track_scroll(this.scroll)
         // A block above (another mod's) growing, or the window resizing, shrinks this list and can push the active space out.
-        .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
+        // [herdr-todo] 只在高度**真的变了**时这么做。宿主每次渲染都会用同一个尺寸再报
+        // 一次 on_size_change；原样调用 scroll_to_item 会把用户滚到别处的列表静默拉回
+        // 活动行——表现为滚到底、停几秒后又「弹回来」。尺寸没变，就没有行被挤出去。
+        // 也不在这里 notify()：那是 render → size_change → notify 的自激循环。
+        .on_size_change((size) => {
+          const last = this.listHeight;
+          this.listHeight = size.height;
+          if (last === size.height) return;
+          if (this.activeAt >= 0) this.scroll.scroll_to_item(this.activeAt);
+        })
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
         .children(list));
   }
