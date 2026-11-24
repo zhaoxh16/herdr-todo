@@ -1,5 +1,5 @@
 // 由 scripts/sync-core.sh 从 src/core.js 生成，请勿手工编辑。
-// source-sha256: 5a97cd1a6f35ae0e9b2e9675d5812912ec17898c28e817cce8ad8b490e5b93b5
+// source-sha256: 50700bde8e621453d49f244d86f1c97ad42ac4d57520781c7c7be15026a46c6f
 // 纯数据层（只读侧）：无 IO、无宿主依赖。CLI 与 Herdr mod 共用这份逻辑
 // （mod 侧是副本，由 scripts/sync-core.sh 生成，因此这里不能 import 任何东西）。
 //
@@ -82,7 +82,8 @@ export function normalizeState(raw) {
       throw new TodoError(`${at}（${it.id}）的 spaces 必须是数组`, "corrupt");
     }
     // agent 关联必须是 {address, space}：address 用于「关联到哪个 agent」，
-    // space 是关联当时它所在的 space，agent 关掉后靠它回退显示。
+    // space 是关联当时它所在的 space，侧栏按它把该事项归到对应 space 组
+    // （agent 活着、搬家、关掉都用这个值，位置不跳）。
     if (it.agent != null) {
       const a = it.agent;
       const ok =

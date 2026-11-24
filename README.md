@@ -21,8 +21,9 @@
 「未关联」组；关联到已不存在 space 的归到列表末尾的「space 已不存在」，不会被悄悄丢掉。
 
 一条事项也可以**关联到某个 agent**（Herdr Agents 栏里跑着的那个）而不是 space。这时它
-显示在 Agents 栏那个 agent 行下面，侧栏不再列它；agent 关掉之后，它自动回退显示到关联
-当时它所在的那个 space。关联 agent 与关联 space 互斥。
+**两处都显示**：Agents 栏挂在那个 agent 行下面，Spaces 侧栏按关联当时记下的 space 归到
+对应 space 组下（行尾带 `@ <agent 地址尾巴>` 标记）。这样每个 space 下有哪些待办一眼看全，
+不管那些待办是挂在 space 上还是挂在 agent 上。关联 agent 与关联 space 互斥。
 
 ## 安装
 
@@ -129,6 +130,9 @@ herdr-app do layout.switch --name herdr-todo
 
 - 顶部「未关联」组列出还没归到任何 space 的事
 - 每个 space 行下面缩进列出它的未关闭事项：状态字形 + 优先级 + 标题 + 相对时间
+- 关联 agent 的事项也列在这里（按关联当时记下的 space 归组），行尾带 `@ <agent 地址尾巴>`
+  标记，说明它的 space 归属来自 agent；agent 还活着时，同一条事在 Agents 栏那个 agent
+  行下也会出现一次（agent 关掉后 Agents 栏没有行，侧栏这里仍显示）
 - 该 space 有已完成/已取消的事项时，末尾一行「▸ 已完成 N」，点开才列出
 - 鼠标停在 space 行上，右侧出现 ＋，点它给这个 space 记一条
 - 侧栏拖窄到 160px 以下的图标条形态时，待办行不显示（塞不下）
@@ -140,17 +144,23 @@ herdr-app do layout.switch --name herdr-todo
 | 另一个 space 行 | 挪到那个 space（从原 space 移走，不是同时挂两边） |
 | Agents 栏的 agent 行 | 关联到那个 agent（替换 space 关联） |
 | 「未关联」分组标题 | 摘掉 space / agent 关联，回到未关联 |
+| 放回它自己所在的那一组 | 取消，不写盘（拿起又放回，没有表达任何意图） |
 
 从 Agents 栏里的一条待办也能同样拖走——它在 space 与 agent 之间可以来回换。
+但把它拖回「它 agent.space 对应的那个 space 行」属于「放回自己那一组」，是取消、不会
+转成 space 关联；要把 agent 关联换成 space 关联，用详情窗里的「加到 `space`」。
 也可以拖到「space 已不存在」组里的死关联上把它拖出来，顺带清掉那些已不存在的 id。
 
 ### Agents 栏
 
 关联到 agent 的待办显示在 Agents 栏对应 agent 行下面（两种排序模式都有，子 agent 行下也
 有）。点那条待办同样打开详情窗；agent 名下没有待办时那行不变，不占额外空间。
+**它同时也显示在 Spaces 侧栏**（按关联当时记下的 space 归组），两个视图是同一批事的
+两种看法：Agents 栏按「谁在做」，侧栏按「在哪个 space」。
 
-agent 被关闭（终端结束）后，它的事项自动回退到**关联当时**它所在的 space，侧栏那一行会
-带一个 `↩ <agent 地址尾巴>` 标记，说明这是从 agent 回退回来的，不是原本就挂在 space 上的。
+agent 被关闭（终端结束）后，它的事项仍按**关联当时**记下的 space 显示在侧栏（位置不变，
+不会随着 agent 搬家或关闭而跳），侧栏那一行带一个 `@ <agent 地址尾巴>` 标记说明它的
+space 归属来自 agent，不是用户直接挂的 space。
 
 ### 快捷键
 
@@ -292,12 +302,14 @@ herdr-todo add -- "--space 是标题的一部分"
 可以重新关联到别的 space。
 
 **agent 关掉不会丢事项。** 关联到一个 agent 时，会同时记下它当时所在的 space（命令行
-就是那个必填的 `--in-space`）。agent 关掉后 Host 不再告诉你它属于哪个 space，
-所以关联当时就得存下来——那条事项随后回退显示到那个 space。
+就是那个必填的 `--in-space`）。agent 关掉后 Host 不再告诉你它属于哪个 space，所以关联
+当时就得存下来。这个值一直用作侧栏的归组依据：agent 活着时事项按它显示在对应 space 下，
+关掉后仍显示在同一个 space 下，agent 中途搬去别的 space 也不会让它跳位置。
 
 **agent 与 space 互斥。** 一条事项要么挂在若干 space 上，要么挂在某一个 agent 上。
-`link` 一个 space 会解掉 agent 关联，反过来也一样，时间线各记一条。这样「它到底在哪」
-永远只有一个答案，侧栏与 Agents 栏不会各显示一份。
+`link` 一个 space 会解掉 agent 关联，反过来也一样，时间线各记一条。这样「这条事的数据
+关联」永远只有一个答案；显示上它仍同时出现在 Spaces 侧栏（按 agent 的 space）与 Agents 栏
+（按 agent），这是按两种口径各看一次，不是两组互相冲突的关联。
 
 ## 数据
 
@@ -468,8 +480,9 @@ mod/menu/main.js`）。`menu-todo` 因为上游正文里没有可依赖的空位
   那里的松开事件。这种残留会在 15 秒后自动清掉，或在下一次按下任何地方时立即作废——不影响
   数据，只是那段时间里拖动源的行仍显示为压暗。
 - 关联 agent 的依据是 agent 的**地址**（`dev5/t2` 这种）。agent 重启后如果换到别的 space，
-  它会带着原地址回来，关联仍然有效；但如果地址本身变了，那条事项会被当作「agent 已关闭」
-  回退到 space。地址里带着 space 前缀，跨机器也不冲突。
+  它会带着原地址回来，关联仍然有效，侧栏仍按关联当时记下的 space 显示（不会跟着跳）。
+  但如果地址本身变了，那条事项在 Agents 栏里就没有行可挂了，只留在侧栏对应 space 下。
+  地址里带着 space 前缀，跨机器也不冲突。
 - 布局文件是从 App 自带的 `main` 克隆的独立副本。App 大版本升级若改动了 `main` 的结构，
   重新执行 `install.sh` 会基于新的 `main` 重建，但你对布局的手动调整需要重做。
 - `sync-core.sh` 需要 `shasum` 或 `sha256sum`；两者都没有时它会报错退出，而不是写一个

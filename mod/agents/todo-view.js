@@ -9,9 +9,13 @@
 //  - 关联到已不存在 space 的事项单独成组，不会被悄悄丢掉。
 //
 // 关联模型（用户 2026-11-19 定）：一条事项要么关联 space（可多个），要么关联
-// **一个** agent，二者互斥（由 core 的写入函数强制）。agent 关掉之后 Host 不再
-// 提供它属于哪个 space（`agents()` 里它就消失了），所以 item.agent 里存了关联
-// 当时的 space，用于回退显示。
+// **一个** agent，二者互斥（由 core 的写入函数强制）。item.agent.space 记的是
+// 关联当时那个 agent 所在的 space，由写入端存下、不随 agent 之后搬家或关闭而改。
+//
+// 两个视图都显示 agent 事项（用户 2026-11-24 补充）：一条关联 agent 的事项既在
+// Agents 栏挂在它名下，也在侧栏按 agent.space 归到对应 space 组。这不是「重复
+// 显示」——两个视图本来就是同一批事的两种看法，Agent 栏按「谁在做」、侧栏按
+// 「在哪个 space」。deriveAgents 与 deriveSidebar 各自独立地收它，互不裁剪。
 
 import { CLOSED_STATUSES, sortItems } from "./core.js";
 
@@ -29,46 +33,84 @@ function finish(b) {
 }
 
 /**
- * 事项在侧栏里应该显示在哪些 space 下。
+ * 这条事项在侧栏里显示在哪些 space 组下（只看当前存在的 space）。
+ *
+ * 这是「它显示在哪」的**单一事实源**：派生（placeOf）用它归组；投放端的
+ * 「落回自己组＝取消」判定（isDropBackToSelf）刻意**不**复用它——那个判定问的是
+ * 「手势的来源组」，对多 space 事项这两者不同，复用会把一次合法的移走当成取消。
+ * 关联 agent 的事项特别容易踩这个：它显示在 agent.space 组里，数据关联却是 agent。
+ *
+ * 关联 agent 的事项一律按 `agent.space`（关联当时记下的 space）归组，无论那个
+ * agent 现在还活着、关了、还是搬去了别的 space。这个值是写入时固定的，所以同一条
+ * 事项不会随 agent 搬家在两个 space 之间跳，agent 关掉后也不会突然换位置；同时它与
+ * `herdr-todo spaces` 的计数口径（cli.js 按 agent.space 计）一致。
+ *
+ * 于是这里不需要 agent 列表：活不活着只影响 Agents 栏，不影响侧栏归组。
+ */
+function spaceIdsOf(it, knownIds) {
+  if (it.agent) {
+    const id = it.agent.space;
+    return id && knownIds.has(id) ? [id] : [];
+  }
+  const raw = Array.isArray(it.spaces) ? it.spaces : [];
+  // 有关联但全是已不存在的 space：返回空数组，由 placeOf 归到孤儿组（不丢事项）。
+  return raw.filter((s) => knownIds.has(s));
+}
+
+/** 关联本身是否有效（未关联 / 死关联 → false）。用于 placeOf 区分孤儿组。 */
+function hasLink(it) {
+  if (it.agent) return true;
+  return Array.isArray(it.spaces) && it.spaces.some(Boolean);
+}
+
+/**
+ * 事项在侧栏里应该显示在哪。
  *
  * 三种结果语义不同，调用方必须分开处理：
  *  - `{ at: [...] }`：显示在这些 space 组下；
- *  - `{ hidden: true }`：挂在活着的 agent 上，由 Agents 栏显示，侧栏不列；
- *  - `{ dangling: true }`：有关联但目标都不存在了（agent 与它当时的 space 都没了）。
- *
- * 用户的原话是「如果 agent 被关闭则回退到 workspace」——回退只在 agent 消失后发生，
- * 所以活着时侧栏不重复列。回退位置用关联当时记下的 space，而不是 agent 现在的
- * 所在：把它固定下来，同一条事项才不会随着 agent 搬家在两个 space 之间跳。
+ *  - `{ dangling: true }`：有关联但目标 space 都不存在了；
+ *  - `{ unlinked: true }`：没有任何关联。
  */
-function placeOf(it, liveAgentSpace, knownIds) {
-  if (it.agent) {
-    if (liveAgentSpace.has(it.agent.address)) return { hidden: true };
-    const id = it.agent.space;
-    return id && knownIds.has(id) ? { at: [id] } : { dangling: true };
-  }
-  const ids = Array.isArray(it.spaces) ? it.spaces.filter((s) => knownIds.has(s)) : [];
-  if (ids.length) return { at: ids };
-  return Array.isArray(it.spaces) && it.spaces.some(Boolean) ? { dangling: true } : { unlinked: true };
+function placeOf(it, knownIds) {
+  const at = spaceIdsOf(it, knownIds);
+  if (at.length) return { at };
+  return hasLink(it) ? { dangling: true } : { unlinked: true };
+}
+
+/**
+ * 松手落在 `spaceId` 这一行，算不算「拿起又放回自己那个组」＝取消。
+ *
+ * 问的是**手势的来源组**，不是「这条事项是否也显示在这个组」：两者对多 space
+ * 事项不同。`spaces:["spA","spB"]` 的事项从 spA 组拖起、落到 spB 行，是一次
+ * 合法的「从 spA 移走、留在 spB」（applyMove from=spA to=spB）；若按「显示在
+ * spB」判成取消，这个手势就会静默失效。
+ *
+ * 两种来源各有精确的「自己组」：
+ *  - space 来源：`from.key`（就是被拖出的那一组，多 space 也只认这一组）；
+ *  - agent 来源：事项的 `agent.space`（agent 事项只显示在唯一那个组），且从
+ *    Agents 栏拖来的手势同样走这一支。
+ * 其余来源（未关联 / 孤儿 / 找不到事项 / 坏数据）一律不取消。
+ */
+export function isDropBackToSelf(drag, it, spaceId) {
+  if (!drag || !spaceId) return false;
+  const from = drag.from;
+  if (from?.kind === "space") return from.key === spaceId;
+  if (from?.kind === "agent") return Boolean(it?.agent && it.agent.space === spaceId);
+  return false;
 }
 
 /**
  * @param {{items?: Array}} state 账本
  * @param {Array<{id: string}>} knownSpaces Herdr 当前的 space 列表（顺序即显示顺序）
- * @param {Array<{address: string, space: string}>} [knownAgents] Herdr 当前的 agent 列表
  * @returns {{
  *   unlinked: {open: Array, closed: Array},
  *   orphans: {open: Array, closed: Array},
  *   spaces: Array<{id: string, open: Array, closed: Array}>,
  * }}
  */
-export function deriveSidebar(state, knownSpaces, knownAgents) {
+export function deriveSidebar(state, knownSpaces) {
   const items = Array.isArray(state?.items) ? state.items : [];
   const known = Array.isArray(knownSpaces) ? knownSpaces : [];
-  const liveAgentSpace = new Map(
-    (Array.isArray(knownAgents) ? knownAgents : [])
-      .filter((a) => a && typeof a.address === "string" && typeof a.space === "string")
-      .map((a) => [a.address, a.space]),
-  );
 
   const unlinked = bucket();
   const orphans = bucket();
@@ -77,7 +119,7 @@ export function deriveSidebar(state, knownSpaces, knownAgents) {
 
   for (const it of items) {
     if (it.archived != null) continue;
-    const place = placeOf(it, liveAgentSpace, knownIds);
+    const place = placeOf(it, knownIds);
     if (place.at) {
       for (const sid of place.at) {
         const b = byId.get(sid);
@@ -88,7 +130,6 @@ export function deriveSidebar(state, knownSpaces, knownAgents) {
     } else if (place.dangling) {
       push(orphans, it);
     }
-    // hidden：挂着活 agent，侧栏不显示（Agents 栏负责）。
   }
 
   return {
@@ -101,8 +142,10 @@ export function deriveSidebar(state, knownSpaces, knownAgents) {
 /**
  * 每个 agent 地址 → 关联到它的待办。Agents 栏据此在每个 agent 行下画待办。
  *
- * 只收**活着**的 agent：agent 关掉后那个地址在 `agents()` 里不存在，它的事项
- * 已经回退到 space 视图（见 deriveSidebar），这里再列一遍就重复了。
+ * 只收**活着**的 agent：agent 关掉后那个地址在 `agents()` 里不存在，Agents 栏
+ * 没有行可挂，它的待办由侧栏按 agent.space 显示（见 deriveSidebar）。
+ * 活着的 agent 两边都显示是刻意的：同一条事按「谁在做」和「在哪个 space」
+ * 各看一次，不是重复计数。
  */
 export function deriveAgents(state, knownAgents) {
   const items = Array.isArray(state?.items) ? state.items : [];

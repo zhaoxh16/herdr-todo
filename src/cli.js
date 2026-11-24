@@ -180,7 +180,7 @@ function renderItemLine(it) {
 
 function linkText(item) {
   // agent 与 space 互斥（规则层强制），所以这两者是「或」不是「和」。
-  if (item.agent) return `agent ${item.agent.address}（关掉后回退到 ${item.agent.space}）`;
+  if (item.agent) return `agent ${item.agent.address}（侧栏归到 ${item.agent.space}）`;
   return item.spaces.length ? item.spaces.join(", ") : "（未关联）";
 }
 
@@ -409,7 +409,7 @@ export async function main(argv, env = process.env) {
         out("");
         for (const it of sortItems(pool)) {
           out(renderItemLine(it));
-          if (it.agent) out(`       关联：agent ${it.agent.address}（关掉后回退到 ${it.agent.space}）`);
+          if (it.agent) out(`       关联：agent ${it.agent.address}（侧栏归到 ${it.agent.space}）`);
           else if (it.spaces.length) out(`       关联：${it.spaces.join(", ")}`);
         }
         return 0;
@@ -561,7 +561,7 @@ export async function main(argv, env = process.env) {
           return 0;
         }
         if (!address) throw new UsageError("agent 需要编号和 address（或 --clear）");
-        if (!opts.inSpace) throw new UsageError("agent 需要 --in-space <space>：agent 关掉后靠它回退显示");
+        if (!opts.inSpace) throw new UsageError("agent 需要 --in-space <space>：侧栏按它把事项归到对应 space");
         const link = { address: String(address).trim(), space: String(opts.inSpace).trim() };
         if (!link.address || !link.space) throw new UsageError("agent 的 address 与 --in-space 都不能为空");
         const r = await updateItem(
@@ -569,7 +569,7 @@ export async function main(argv, env = process.env) {
           (item) => applyAgent(item, { agent: link, at: Date.now(), by }),
           { clientOpId: opIdOf(opts) },
         );
-        jsonOut(opts, r.item, `${refOf(r.item)} 关联 → agent ${link.address}（回退 space ${link.space}）`);
+        jsonOut(opts, r.item, `${refOf(r.item)} 关联 → agent ${link.address}（侧栏归到 ${link.space}）`);
         return 0;
       }
 
@@ -629,8 +629,9 @@ export async function main(argv, env = process.env) {
 
       case "spaces": {
         // 库里出现过的 space id 及计数：CLI 不连 Herdr，只反映库自身。
-        // 关联到 agent 的事项按它的**回退 space** 计数：agent 关掉后它就显示在
-        // 那个 space 下，脚本按本命令规划 space 时不该漏掉它。
+        // 关联到 agent 的事项按它记下的 agent.space 计数：侧栏会显示它（该 space
+        // 已不存在时归入「space 已不存在」组），CLI 不连 Herdr、无从判断存活，
+        // 脚本按本命令规划 space 时不该漏掉它。
         const all = await store.listItems({ includeClosed: true });
         const counts = new Map();
         for (const it of all) {

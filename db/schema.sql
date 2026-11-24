@@ -73,8 +73,9 @@ CREATE TABLE IF NOT EXISTS item_places (
   kind     ENUM('space','agent') NOT NULL,
   -- space id，或 agent 地址（"dev5/t2" 这种，跨机器不冲突）。
   ref      VARCHAR(191) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
-  -- agent 关联当时所在的 space。agent 关闭后宿主不再报告它属于哪个 space，
-  -- 回退显示只能靠这个值，所以它是关联的一部分而不是可选装饰。
+  -- agent 关联当时所在的 space。侧栏按 space 归组这类事项时就靠它（agent
+  -- 活着、搬家、关掉都不改这个值，位置不跳）；agent 关闭后宿主不再报告它
+  -- 属于哪个 space，也只有这个值可查，所以它是关联的一部分而非可选装饰。
   in_space VARCHAR(191) CHARACTER SET ascii COLLATE ascii_general_ci NULL,
   -- 让「一条事项最多一个 agent 关联」在结构上无法违反：kind='agent' 时值是
   -- item_id，否则 NULL；唯一键允许多个 NULL，因此多 space 关联不受影响。

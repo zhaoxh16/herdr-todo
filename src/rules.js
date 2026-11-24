@@ -242,8 +242,9 @@ export function applyMove(item, input) {
  * 关联到某个 agent（agent 传 null 解除）。agent 与 space 互斥：挂上 agent 就清空
  * space 关联，反之由 applySpaces / applyMove 负责。
  *
- * `space` 是关联当时该 agent 所在的 space。agent 关掉后宿主不再报告它属于哪个
- * space，回退显示只能靠这个值。
+ * `space` 是关联当时该 agent 所在的 space：侧栏按它把该事项归到对应 space 组
+ * （agent 活着、搬家、关掉都用这个值，位置不跳）。agent 关掉后宿主不再报告它
+ * 属于哪个 space，也只有这个值可查。
  */
 export function applyAgent(item, input) {
   const { at, by } = input;
@@ -260,7 +261,7 @@ export function applyAgent(item, input) {
   const from = item.agent?.address ?? null;
   const to = next?.address ?? null;
   // address 没变、且「都没有关联」或「space 也没变」时无事可做。这里要比 space：
-  // agent 在同一地址下换了 space 时，回退位置应该更新，那是真实变化。
+  // agent 在同一地址下换了 space 时，侧栏归组位置应该更新，那是真实变化。
   // 「都没有关联」与「都有关联且 address 相同」两种情形才算 from === to；
   // 只比 address 会把「本来没有、现在也没有」误判成有变化。
   const samePresence = (next == null) === (item.agent == null);
@@ -271,7 +272,9 @@ export function applyAgent(item, input) {
   const updated = { ...item, updated: ts };
   if (next) {
     updated.agent = next;
-    // 替代关系：挂上 agent 就清掉 space 关联，否则两个视图会各显示一份。
+    // 替代关系：挂上 agent 就清掉 space 关联。「这条事的数据挂在哪」永远只有
+    // 一个答案；显示上侧栏（按 agent 的 space）与 Agents 栏（按 agent）仍各列
+    // 一次，那是两种口径，不是两份冲突的关联。
     updated.spaces = [];
   } else {
     delete updated.agent;

@@ -220,14 +220,15 @@ test("spaces-todo：menu-todo 缺 codebuddy.js 时退回自带 menu", async () =
   assert.equal(s.overlays.at(-1).mod, "menu", "menu-todo 的 main.js 第一件事就是 import ./codebuddy.js，缺了它加载会失败");
 });
 
-// 侧栏分组要拿到 agent 列表：挂在活 agent 上的事项侧栏不列（由 Agents 栏显示）。
-// 漏掉 `agents` 导入时 todoGroups() 直接 ReferenceError，整条侧栏渲不出来，而
-// herdr-app check 只解析不渲染，照样报 passed；传空列表则会让这类事项提前回到
-// space 组，与 Agents 栏重复。两种坏法都只在真正渲染时才看得见。
-test("spaces-todo：侧栏分组按活 agent 隐藏事项", async () => {
+// 绑定 agent 的事项也要显示在 Spaces 侧栏对应 space 下（用户 2026-11-24）。
+// 归组依据是事项里记下的 agent.space，与 agents() 里那个 agent 现在活不活、在
+// 哪个 space 都无关——所以 todoGroups() 不需要 agent 列表。这条走真实 mod 实例：
+// 漏掉归组、或又退回按「活 agent 隐藏」的旧口径，这里会红。
+test("spaces-todo：绑定 agent 的事项也落进它 agent.space 的 space 组", async () => {
   const { mod, s } = await loadMod("spaces");
   s.spaces = [{ id: "spA", name: "A" }];
-  s.agents = [{ address: "dev5/t2", space: "spA", title: "claude" }];
+  // 故意把 agent 列表里那个 agent 放到别的 space：侧栏归组不该跟着它走。
+  s.agents = [{ address: "dev5/t2", space: "spB", title: "claude" }];
   const inst = spacesView(mod);
   inst.todoState = {
     items: [
@@ -237,10 +238,162 @@ test("spaces-todo：侧栏分组按活 agent 隐藏事项", async () => {
   const g = inst.todoGroups();
   assert.deepEqual(
     g.spaces.flatMap((x) => x.open.map((i) => i.id)),
-    [],
-    "挂着活 agent 的事项不该出现在 space 组下（Agents 栏负责显示它）",
+    ["t1"],
+    "应按事项里记下的 agent.space（spA）显示，而不是 agent 现在所在的 spB",
   );
   assert.deepEqual(g.unlinked.open, [], "关联了 agent 就不算未关联");
+});
+
+// 现在 agent 待办也会画在 space 组里，而这些事项数据上的关联是 agent（spaces 为
+// 空数组）。拖动源若照抄组的 kind:"space"，拖到「未关联」会走 move --from <space>，
+// applyMove 对没有 space 关联的事项是空操作——用户看到「拖了没反应」。按下时写进
+// shared 的 from 必须是 kind:"agent"，todoMove 才会走解除 agent 关联那条正确路径。
+// 这条真的按下一条 agent 待办行，断言写入的手势形态。
+test("spaces-todo：侧栏里的 agent 待办行按 agent 来源拖动（不是 space 来源）", async () => {
+  const herdr = HERDR_STUB.replace(
+    /^export const setShared = .*$/m,
+    "export const setShared = (k, v) => { (globalThis.__hr.setShares ??= []).push([k, v]); return null; };",
+  ) + `
+// 记下 todoRow 挂的 on_mouse_down 回调，按元素 id 区分。
+`;
+  // 用一个会记录 on_mouse_down 的元素替身；其余仍是「什么都能链」的 Proxy。
+  const base = `
+const el = new Proxy(function () {}, {
+  get: (t, k) => {
+    if (k === "then") return undefined;
+    if (k === "on_mouse_down") return (...a) => {
+      const fn = a.filter((x) => typeof x === "function").at(-1);
+      (globalThis.__downs ??= []).push([globalThis.__cur ?? null, fn]);
+      return el;
+    };
+    if (k === "id") return (v) => { globalThis.__cur = v; return el; };
+    return el;
+  },
+  apply: () => el,
+});
+export const v_flex = () => el, h_flex = () => el;
+export const ScrollHandle = { new: () => ({ scroll_to_item() {} }) };`;
+  // 记录用的是裸全局（不在 __hr 里），loadMod 不会重置，测试自己先清干净，
+  // 免得别的用例先跑过时留下旧回调让 .find 命中错的那一个。
+  globalThis.__downs = [];
+  globalThis.__cur = null;
+  const { mod } = await loadMod("spaces", { herdr, base, gpk: GPUI_KIT_STUB });
+  const inst = Object.create(mod.default.prototype);
+  inst.todoDrag = null;
+  const it = { id: "t1", title: "t1", status: "todo", priority: "P2", spaces: [], agent: { address: "dev5/t2", space: "spA" }, updated: 1 };
+  // src 是「它显示在的 space 组」，与真实 row 包装里传的一致。
+  inst.todoRow(it, {}, { kind: "space", key: "spA", spaces: ["spA"] }, 30);
+  const down = (globalThis.__downs ?? []).find(([, fn]) => typeof fn === "function");
+  assert.ok(down, "todoRow 应挂 on_mouse_down");
+  down[1]();
+  const share = (globalThis.__hr.setShares ?? []).at(-1);
+  assert.ok(share, "按下应写一次 shared 手势");
+  assert.equal(share[0], "todo.drag");
+  assert.equal(share[1].from.kind, "agent", "agent 待办必须按 agent 来源拖动");
+  assert.equal(share[1].from.key, "dev5/t2");
+});
+
+// 绑定 agent 的事项现在也显示在侧栏的 agent.space 组里，而它的手势来源被改成
+// kind:"agent"。投放端若仍只认「from.kind === space」的自投放豁免，把这条待办
+// 拿起又放回自己那一行就会执行 move → applyMove 的 dropAgent，静默把 agent 关联
+// 换成 space 关联（Agents 栏那条随之消失）。这两条真的调用 todoDropTo/todoDropReady：
+// 落回自己组必须零写命令，落到别的 space 仍要正常 move（别把合法投放也吃掉）。
+// shared 用手写的可变状态，让 readDrag() 能读到手势；exec 由替身记录。
+const DROP_HERDR = `
+const s = globalThis.__hr ?? (globalThis.__hr = {});
+s.spaces ??= []; s.panes ??= []; s.terminals ??= []; s.agents ??= [];
+s.overlays ??= []; s.execs ??= []; s.runs ??= []; s.notes ??= [];
+s.props ??= {}; s.files ??= {}; s.menuReads ??= 0; s.isChecking ??= false; s.closes ??= [];
+s.shared ??= null;
+export const spaces = () => s.spaces;
+export const machines = () => [];
+export const panes = () => s.panes;
+export const terminals = () => s.terminals;
+export const agents = () => s.agents;
+export const run = (name, args) => { s.runs.push([name, args]); return null; };
+export const props = () => s.props;
+export const closeOverlay = (id) => { (s.closes ??= []).push(id); return null; };
+export const openOverlay = (spec) => { s.overlays.push(spec); return "o1"; };
+export const theme = () => ({ muted: "m", dim: "d", hover: "h", foreground: "f", border: "b", chrome: "c", raised: "r", selected: "s", working: "w", accent: "a" });
+export const keys = () => [];
+export const exec = async (cmd, args, opts) => { s.execs.push([cmd, args, opts]); return { code: 0, stdout: "", stderr: "" }; };
+export const hc = async () => ({ code: 0, stdout: "", stderr: "" });
+export const shared = (k) => s.shared;
+export const setShared = (k, v) => { s.shared = v; return null; };
+export const watchFolder = () => { throw new Error("no watchers in tests"); };
+export const window = () => ({ platform: "macos", buttons: false, titlebar: "none" });
+export const layout = () => ({ children: [] });
+export const settings = () => ({ zoom: 1 });
+export const checking = () => s.isChecking;
+export const appHome = () => s.appHome ?? "/tmp/herdr-app";
+export const readTextFile = async (p) => { s.menuReads++; return (s.files ?? {})[p] ?? null; };
+export const home = () => "/tmp/home";
+export const notify = (n) => { s.notes.push(n); return "n1"; };
+export const focused = () => null;
+export const localStorage = { getItem: () => null, setItem: () => {} };
+`;
+
+async function dropSetup() {
+  const { mod, s } = await loadMod("spaces", { herdr: DROP_HERDR });
+  const inst = Object.create(mod.default.prototype);
+  const it = { id: "t1", title: "t1", status: "todo", priority: "P2", spaces: [], agent: { address: "dev5/t2", space: "spA" }, created: 1, updated: 1, timeline: [] };
+  inst.todoState = { items: [it] };
+  // 手势就是 todoRow 对 agent 事项实际写入的形态（见上一条测试）。
+  const drag = { id: "t1", title: "t1", from: { kind: "agent", key: "dev5/t2", spaces: [] }, at: Date.now() };
+  inst.todoDrag = drag;
+  s.shared = drag;
+  return { mod, s, inst, it };
+}
+
+test("spaces-todo：agent 待办拖回它显示的 space 行＝取消，不写盘", async () => {
+  const { s, inst } = await dropSetup();
+  const cx = { notify() {}, spawn() {} };
+  // 高亮也不该把这一行画成合法投放目标（界面主动诱导该手势是缺陷的一部分）。
+  assert.equal(inst.todoDropReady("spA"), false, "自己所在组不该亮成投放目标");
+  assert.equal(inst.todoDropReady("spB"), true, "别的 space 仍是合法投放目标");
+  inst.todoDropTo("spA", cx);
+  assert.equal(s.execs.length, 0, "落回自己组不该发任何写命令（否则会静默改写 agent 关联）");
+  assert.equal(s.shared, null, "取消也要清掉 shared 手势");
+});
+
+test("spaces-todo：agent 待办拖到别的 space 行仍正常 move", async () => {
+  const { s, inst } = await dropSetup();
+  const cx = { notify() {}, spawn(fn) {
+    // todoMove 用 cx.spawn 跑异步写；这里同步接住它以便断言 exec 记录。
+    try { const r = fn({ ...cx, sleep: () => new Promise(() => {}) }); r?.catch?.(() => {}); } catch {}
+  } };
+  inst.todoDropTo("spB", cx);
+  await settle();
+  const write = s.execs.find(([, args]) => Array.isArray(args) && args.includes("move"));
+  assert.ok(write, "拖到别的 space 应发 move 命令，不能被自投放判定误吃");
+  assert.ok(write[1].includes("spB"), "目标应是 spB");
+});
+
+// O15 回归：多 space 事项从 spA 组拖到 spB 行是一次合法的「从 spA 移走、留在
+// spB」（applyMove from=spA to=spB）。它确实也显示在 spB，但不是「拿起又放回」，
+// 按「是否显示在该组」判会把它静默吃掉。这里真的调 todoDropTo 确认仍写盘。
+test("spaces-todo：多 space 事项从 spA 拖到 spB 仍正常 move --from", async () => {
+  const { mod, s } = await loadMod("spaces", { herdr: DROP_HERDR });
+  const inst = Object.create(mod.default.prototype);
+  const it = { id: "m1", title: "m1", status: "todo", priority: "P2", spaces: ["spA", "spB"], created: 1, updated: 1, timeline: [] };
+  inst.todoState = { items: [it] };
+  const drag = { id: "m1", title: "m1", from: { kind: "space", key: "spA", spaces: ["spA"] }, at: Date.now() };
+  inst.todoDrag = drag;
+  s.shared = drag;
+  const cx = { notify() {}, spawn(fn) {
+    try { const r = fn({ ...cx, sleep: () => new Promise(() => {}) }); r?.catch?.(() => {}); } catch {}
+  } };
+  assert.equal(inst.todoDropReady("spB"), true, "spB 是合法投放目标，不该被误排除");
+  inst.todoDropTo("spB", cx);
+  await settle();
+  const write = s.execs.find(([, args]) => Array.isArray(args) && args.includes("move"));
+  assert.ok(write, "从 spA 拖到 spB 必须写 move，不能被自投放判定静默吃掉");
+  assert.ok(write[1].includes("--from=spA"), "应带 --from=spA 摘掉来源组");
+  assert.ok(write[1].includes("spB"), "目标应是 spB");
+  // 放回 spA 仍是取消。
+  s.shared = drag; inst.todoDrag = drag; s.execs.length = 0;
+  inst.todoDropTo("spA", { notify() {}, spawn() {} });
+  assert.equal(s.execs.length, 0, "放回 spA 才算取消");
 });
 
 // ---------------- menu-todo：CodeBuddy 菜单项与点击行为 ----------------

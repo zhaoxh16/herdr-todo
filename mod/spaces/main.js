@@ -5,13 +5,13 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-// [herdr-todo] 这一行比上游多了 checking/agents（待办扩展要用的）与
-// appHome/readTextFile（右键菜单探明 menu-todo 是否装着）。重新克隆后这 4 个名字
+// [herdr-todo] 这一行比上游多了 checking（待办扩展要用）与
+// appHome/readTextFile（右键菜单探明 menu-todo 是否装着）。重新克隆后这 3 个名字
 // 必须加回去——漏掉任何一个都会在 init 或右键时抛 ReferenceError，而
 // herdr-app check 因为 checking() 短路与不执行 menu() 而照样报 passed。
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, checking, agents, appHome, readTextFile } from "herdr"; // [herdr-todo]
+import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, checking, appHome, readTextFile } from "herdr"; // [herdr-todo]
 import { read, command, dataDir, sync } from "./store.js";
-import { deriveSidebar } from "./todo-view.js";
+import { deriveSidebar, isDropBackToSelf } from "./todo-view.js";
 import { DRAG_KEY, readDrag, beginDrag, endDrag, staleOnPress, dragGhost, learnRoot } from "./todo-drag.js";
 
 // [herdr-todo] menu-todo 探明的判据：这段文本像不像一个能加载的 ES 模块。
@@ -808,11 +808,10 @@ SpacesTodo.todoWatch = function todoWatch(cx) {
 
 SpacesTodo.todoGroups = function todoGroups() {
   const known = (spaces() ?? []).map((s) => ({ id: s.id, name: s.name }));
-  // agent 列表必须有：关联到活 agent 的事项侧栏不列（由 Agents 栏显示），
-  // 只有 agent 关掉后才回退到它关联当时的 space。少传这个参数会让所有
-  // agent 事项都被当成「已关闭」而提前回退。
-  const live = (agents() ?? []).map((a) => ({ address: a.address, space: a.space, name: a.title }));
-  return deriveSidebar(this.todoState ?? { items: [] }, known, live);
+  // 侧栏归组只看「事项记下的 space」：关联 agent 的事项按 agent.space 归到对应
+  // space 组，无论那个 agent 活着、关了、还是搬了家。deriveSidebar 因此不需要
+  // agent 列表（那是 Agents 栏才要的），少一份 live/dead 判定就不会分叉。
+  return deriveSidebar(this.todoState ?? { items: [] }, known);
 };
 
 // ---------- 行渲染 ----------
@@ -831,6 +830,10 @@ SpacesTodo.todoGroups = function todoGroups() {
  *
  * `src` 是来源描述 `{ kind, key, spaces }`：投放时要靠它算「从哪儿挪走」。
  * 从 space 组拖走只移除该组；从孤儿组拖走则清掉那些已不存在的 id。
+ * 关联 agent 的事项虽然画在某个 space 组里，数据上却没有 space 关联（`spaces`
+ * 是空数组，关联在 `agent` 上），必须按下面改成 `kind: "agent"` 的来源——否则
+ * 拖到「未关联」会走 `move --from <space>`，那条规则对没有 space 关联的事项是
+ * 空操作，用户会看到「拖了却没反应」。
  */
 SpacesTodo.todoRow = function todoRow(it, t, src, indent) {
   // 孤儿组要清掉的是「这条事项自己关联的全部 space」——它们都已不存在（否则
@@ -841,6 +844,11 @@ SpacesTodo.todoRow = function todoRow(it, t, src, indent) {
     src.kind === "orphan" && !Array.isArray(src.spaces)
       ? { ...src, spaces: Array.isArray(it.spaces) ? it.spaces : [] }
       : src;
+  // agent 事项按它真正的关联形态当拖动源：todoMove 里 `kind: "agent"` 的分支
+  // 才会用「解除 agent 关联」（拖到未关联）或 `move`（拖到 space，由 applyMove
+  // 在同一次写里摘掉 agent）。这也顺带修了此前「agent 关了、已回退到 space 的
+  // 事项」被当成 space 来源拖不动的旧缺口——两种状态现在走同一条正确路径。
+  const dragFrom = it.agent ? { kind: "agent", key: it.agent.address, spaces: [] } : origin;
   const line = h_flex()
     .id(`todo-${src.key}-${it.id}`)
     .h(20)
@@ -853,10 +861,10 @@ SpacesTodo.todoRow = function todoRow(it, t, src, indent) {
     // 拿着它的时候压暗：告诉读者「被拿起的是这一条」。
     .when(this.todoDrag?.id === it.id, (el) => el.opacity(0.45))
     .on_mouse_down("left", () => {
-      this.todoDrag = { id: it.id, title: it.title, from: origin, at: Date.now() };
+      this.todoDrag = { id: it.id, title: it.title, from: dragFrom, at: Date.now() };
       // 跨 mod 传不出指针事件，用 shared 作通道：Agents 栏据此认出「手上拿着
       // 哪一条」，并在它自己的目标行上松手时关联。
-      beginDrag(it, origin);
+      beginDrag(it, dragFrom);
     })
     .on_mouse_up("left", (_e, cx) => {
       const drag = this.todoDrag;
@@ -865,7 +873,7 @@ SpacesTodo.todoRow = function todoRow(it, t, src, indent) {
       // 由收到松开事件的元素负责处置（投放），本处理根本不会被调用。
       endDrag();
       // 拿起的不是这一条、或来自别的组（重渲染后行还在但手势已换）＝不当作点击。
-      if (!drag || drag.id !== it.id || drag.from?.key !== src.key) return;
+      if (!drag || drag.id !== it.id || drag.from?.key !== dragFrom.key) return;
       // 按下与松开在同一行 = 点击，照常打开详情。
       openOverlay({
         mod: "herdr-todo",
@@ -880,13 +888,14 @@ SpacesTodo.todoRow = function todoRow(it, t, src, indent) {
     .child(div().w(10).flex_none().text_size(11).text_color(statusColor(it.status, t)).child(STATUS_GLYPH[it.status] ?? "?"))
     .child(div().w(18).flex_none().text_size(9).font_semibold().text_color(priorityColor(it.priority, t)).child(it.priority))
     .child(div().flex_1().truncate().text_size(11).text_color(t.muted).child(it.title));
-  // 已回退到 space 的事项标出它原来挂在哪个 agent 上：否则用户只会看到一条
-  // 突然出现在 space 下的待办，不知道这是一条「agent 关了」的事项。
-  // 账本是用户可以手改的 JSON：`agent` 存在但 `address` 缺失时只退化成不显示
-  // 标记，不能因为一条坏数据把整个侧栏渲染挂掉。
+  // 关联 agent 的事项标出它挂在哪个 agent 上：侧栏按 space 归组，同一条事在
+  // Agents 栏还会在那个 agent 名下出现一次，这个标记让两处对得上，也说明它
+  // 的 space 归属来自 agent.space（关联当时记下的），不是用户直接挂的 space。
+  // 账本可手改：`agent.address` 缺失时退化成不显示标记，不能让一条坏数据把
+  // 整个侧栏渲染挂掉。
   if (it.agent) {
     const tail = typeof it.agent.address === "string" ? it.agent.address.split("/").pop() : "";
-    if (tail) line.child(div().flex_none().text_size(9).text_color(t.dim).child(`↩ ${tail}`));
+    if (tail) line.child(div().flex_none().text_size(9).text_color(t.dim).child(`@ ${tail}`));
   }
   const at = relTime(it.updated);
   if (at) line.child(div().flex_none().text_size(9).text_color(t.dim).child(at));
@@ -1038,16 +1047,34 @@ SpacesTodo.row = function todoRowWrap(r, t) {
 };
 
 /**
+ * 手上那条待办在账本里对应的事项。
+ *
+ * agent 来源的手势只带地址、不带它显示所在的 space；判「落回自己组」要按事项的
+ * agent.space 比，所以投放端需要这份事项。账本是可读的派生缓存，找不到（并发
+ * 删除、首帧未加载）时返回 null，由 isDropBackToSelf 退化成「不取消」，不把渲染
+ * 挂掉。
+ */
+SpacesTodo.todoDragItem = function todoDragItem() {
+  const id = this.todoDrag?.id;
+  if (!id) return null;
+  const items = this.todoState?.items;
+  return Array.isArray(items) ? items.find((x) => x && x.id === id) ?? null : null;
+};
+
+/**
  * 本行该不该画投放高亮。
  *
  * 来源要与目标比较，而不是「手上有没有东西」：拖着的就是本行自己那条时，高亮
- * 自己毫无意义。高亮数据来自实例上缓存的那份手势（每帧由 render 从 shared 刷新），
- * 所以从 Agents 栏拖过来的手势在这里也认得。
+ * 自己毫无意义，也不该诱导用户把一个「拿起又放回」的手势当成合法投放。
+ * 判定用 isDropBackToSelf（按手势来源组）：既排除 space 来源放回原组，也排除
+ * agent 来源放回它 agent.space 对应的那一行；同时**不**误排除「多 space 事项
+ * 从另一组拖到本行」这种合法投放。高亮数据来自实例上缓存的那份手势（每帧由
+ * render 从 shared 刷新），所以从 Agents 栏拖过来的手势在这里也认得。
  */
 SpacesTodo.todoDropReady = function todoDropReady(ownKey) {
   const drag = this.todoDrag;
   if (!drag) return false;
-  return !(drag.from?.kind === "space" && drag.from.key === ownKey);
+  return !isDropBackToSelf(drag, this.todoDragItem(), ownKey);
 };
 
 /**
@@ -1059,15 +1086,25 @@ SpacesTodo.todoDropReady = function todoDropReady(ownKey) {
  * 来源是另一个 space 时用 `move`：一次加锁的读改写，去掉来源加上目标。用
  * unlink+link 两次写会在中间留下「两边都没有」或「两边都有」的状态，也会拿渲染
  * 快照做绝对值而覆盖并发修改。
+ *
+ * 「落到自己身上＝取消」按**手势来源组**判定（isDropBackToSelf），不只认
+ * `from.kind === "space"`：绑定 agent 的事项显示在 agent.space 组下，手势来源却是
+ * kind:"agent"，若漏掉这一支，把待办拿起又放回自己那一行会执行 `move` → applyMove
+ * 的 dropAgent，静默把 agent 关联改写成直接 space 关联（Agents 栏那条也随之消失）。
+ * 从 Agents 栏拖来的手势同样按这条数据判定，不需要额外通道。
+ *
+ * 刻意不按「事项是否显示在该组」判定：一条 `spaces:["spA","spB"]` 的事项从 spA
+ * 组拖到 spB 行是合法的「从 spA 移走、留在 spB」，它确实也显示在 spB，却不是
+ * 「拿起又放回」。按显示成员判会把它静默吃掉。
  */
 SpacesTodo.todoDropTo = function todoDropTo(spaceId, cx) {
   const drag = readDrag();
   this.todoDropAt = null;
   if (!drag) return;
-  const from = drag.from;
   // 落到自己身上：当作取消，不写盘（上游的排序/切换点击照常生效，这是把待办
   // 拿起又放回，用户没表达任何意图）。
-  if (from?.kind === "space" && from.key === spaceId) {
+  const self = isDropBackToSelf(drag, this.todoDragItem(), spaceId);
+  if (self) {
     endDrag();
     this.todoDrag = null;
     cx.notify();

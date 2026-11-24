@@ -267,7 +267,9 @@ export default class Agents extends View {
       const mine = collapsed ? [] : this.todoLinesFor(a.address, t, 30);
       // 折叠时待办行一起收起（与子 agent 一致）。但收起的必须**说得出还有几条**，
       // 否则用户折叠一个 agent 后，他挂在它（或它子 agent）上面的待办就好像
-      // 凭空消失了——侧栏那时也不会显示它们（agent 还活着）。
+      // 凭空消失了。侧栏现在也会按 agent.space 显示这些事项（用户 2026-11-24
+      // 补充），但那是按 space 归组的另一种看法，不能替代 Agents 栏自己折叠时
+      // 的提示。
       if (this.folded.has(a.address)) {
         const n = collapsed ? 0 : this.todoCountFor(a.address, subs);
         return n > 0 ? [r, this.todoFoldedHint(a.address, n, t, 30)] : [r];
@@ -784,8 +786,9 @@ AgentsTodo.todoRow = function todoRow(it, t, address, indent) {
  * 一个 agent 名下还有几条开放待办（折叠时用来提示「还有 N 条」）。
  *
  * 要把**子 agent** 名下的也算进来：折叠父行会把子行一起收起，那时
- * 子 agent 的待办在侧栏也看不到（它的 agent 还活着，侧栏按设计不列），
- * 只数父 agent 自己的会让它们两边都不可见且毫无提示。
+ * 子 agent 的待办在 Agents 栏里就看不见了，只数父 agent 自己的会让
+ * 折叠提示少报条数。侧栏按 agent.space 仍会显示它们，但它是按 space
+ * 归组的另一份视图，不该由它补这个提示。
  */
 AgentsTodo.todoCountFor = function todoCountFor(address, subs) {
   const by = this.todoByAgent();
@@ -911,8 +914,8 @@ AgentsTodo.todoDrop = function todoDrop(a, cx) {
   endDrag();
   this.drag = null;
   // 子 agent 行来自 `terminals()` 里的一棵树，它未必是 `agents()` 的一项，
-  // 所以 space 要按「agent → terminal」两级找：关联后要靠它回退显示，
-  // 取不到就不写（写在 todoLink 里处理）。
+  // 所以 space 要按「agent → terminal」两级找：关联后侧栏按它把事项归到对应
+  // space 组，取不到就不写（写在 todoLink 里处理）。
   const space =
     a.space ??
     (agents() ?? []).find((x) => x.address === a.address)?.space ??
@@ -932,13 +935,14 @@ AgentsTodo.todoDrop = function todoDrop(a, cx) {
  * 把一条待办关联到这个 agent。
  *
  * 写路径仍是 CLI 唯一（与详情窗、侧栏同一个理由：CLI 的 mkdir 锁是唯一互斥点）。
- * `--in-space` 是这台 agent **当前**所在的 space：agent 关掉后 Host 不再提供
- * 反查 lineage 的手段，回退显示只能靠关联当时存下的这个值。所以 space 为空的
- * agent（理论上不该有，但 `agents()` 的类型是 string 而非非空）不接投放。
+ * `--in-space` 是这台 agent **当前**所在的 space：侧栏按它把事项归到对应 space
+ * 组，agent 关掉后 Host 不再提供反查 lineage 的手段，也只有这个关联当时存下的值
+ * 可查。所以 space 为空的 agent（理论上不该有，但 `agents()` 的类型是 string
+ * 而非非空）不接投放——没有它这条事项在侧栏无处归组。
  */
 AgentsTodo.todoLink = function todoLink(id, address, space, cx, done) {
   if (!address || !space) {
-    this.todoError = "这个 agent 没有所属 space，无法关联（关掉后无处回退）";
+    this.todoError = "这个 agent 没有所属 space，无法关联（侧栏无处归组）";
     cx.notify();
     if (done) done();
     return;

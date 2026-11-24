@@ -80,7 +80,7 @@
 
 **F6 迁移完整。** 现有账本的每条事项、每条时间线记录、每个 space 与 agent 关联都进入新库，映射后可逐条核对。
 
-**F7 面板行为不变。** 侧栏分组（未关联 / 各 space / Agents 栏 / space 已不存在）、拖拽改归属、详情窗的状态/优先级/标题/备注/归档操作、时间线展示，全部与迁移前一致。唯一的例外是超限输入：旧版对超长标题和备注静默截断后保存成功，现在 CLI 报错（见 §6.2）。
+**F7 面板行为不变。** 侧栏分组（未关联 / 各 space / Agents 栏 / space 已不存在）、拖拽改归属、详情窗的状态/优先级/标题/备注/归档操作、时间线展示，全部与迁移前一致。两个已批准的例外：超限输入（旧版对超长标题和备注静默截断后保存成功，现在 CLI 报错，见 §6.2）；以及 2026-11-24 用户要求「绑定 agent 的待办也按 `agent.space` 显示在侧栏对应 space 组、Agents 栏照旧显示、两视图各一次」——这推翻了迁移前「活 agent 事项侧栏不列」的显示口径，数据模型（space/agent 互斥、`in_space` 存关联当时 space）不变。
 
 **F8 陈旧可见。** 拉取失败时面板显示「数据库不可达，显示的是 <时间> 的缓存」，不静默展示旧数据，也不清空列表。
 
@@ -228,7 +228,7 @@ erDiagram
 要点：
 
 - `items.id` 为 ULID，客户端生成，`ascii_bin` 排序；`(owner_id, num)` 唯一。`items` 与 `item_events` 上的索引都以 `owner_id` 开头——这两张表按 owner 查询是主路径。`item_places` 不加 `owner_id`：它按 `item_id` 与 `(kind, ref)` 访问，而 `item_id` 已隐含 owner，租户过滤由联表或先取 `item_id` 完成；多加一列只会让同一事实存两份。
-- `item_places` 用生成列 `agent_item = IF(kind='agent', item_id, NULL)` 加唯一键，使「一条事项最多一个 agent 关联」在结构上无法违反。多 space 关联不受影响。`in_space` 记录 agent 关联当时所在的 space——agent 关闭后宿主不再报告它属于哪个 space，回退显示只能靠这个值。
+- `item_places` 用生成列 `agent_item = IF(kind='agent', item_id, NULL)` 加唯一键，使「一条事项最多一个 agent 关联」在结构上无法违反。多 space 关联不受影响。`in_space` 记录 agent 关联当时所在的 space，是侧栏按 space 归组该类事项的依据（agent 活着、搬家、关掉都用这个值，位置不跳）；agent 关闭后宿主不再报告它属于哪个 space，也只能靠这个值。
 - `item_events.seq` 是全局 `AUTO_INCREMENT`，单调递增；`owner_id` 与 `item_id` 一并写入，使拉取可以 `WHERE owner_id = ? AND seq > ?` 走索引，不必关联 `items` 表。
 
 #### 事件词表
@@ -457,7 +457,7 @@ flowchart LR
 | 编号寻址（F5） | CLI 测试：`t12` 被拒绝并提示、`#12` 与 ULID 均能寻址 | 三种输入的输出符合 F5 |
 | 迁移完整（F6） | 导入脚本自检 | 条目数、每条的首末事件、关联数与旧账本逐项相等 |
 | **`--json` 的 stdout 契约** | CLI 与导入测试：逐条对 stdout 做 `JSON.parse`，含 `import-json --dry-run --json` 与 `devices --revoke --json` | 每个命令的 stdout 只有一份可解析的 JSON；备份路径、缓存提示这类过程信息出现在 stderr |
-| 面板行为不变（F7） | 现有侧栏与运行时测试在改造后的缓存样本上运行 | 全部通过，且未删改既有断言（超限输入改为报错是 §6.2 已批准的例外，不算回归） |
+| 面板行为不变（F7） | 现有侧栏与运行时测试在改造后的缓存样本上运行 | 全部通过；除 F7 的两个已批准例外（超限输入改为报错见 §6.2、2026-11-24 agent 待办的侧栏归组）外未删改既有断言，这两处不算回归 |
 | 陈旧可见（F8） | 面板侧单测：`pull` 失败时返回原因与 `last_pull_at` | 界面显示「显示的是 <最后一次成功 pull 的时间> 的缓存」，不清空列表；该字段缺失时显示「尚未同步成功」 |
 
 各项由哪些测试承担：纯函数层在 `tests/rules.test.js` / `tests/core.test.js`，缓存原语在 `tests/io.test.js`，真库集成在 `tests/store.test.js` / `tests/pull.test.js` / `tests/import.test.js`，命令表面在 `tests/cli.test.sh`，面板侧在 `tests/mod-runtime.test.js` / `tests/sidebar.test.js` / `tests/argv.test.js`。

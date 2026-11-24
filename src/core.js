@@ -80,7 +80,8 @@ export function normalizeState(raw) {
       throw new TodoError(`${at}（${it.id}）的 spaces 必须是数组`, "corrupt");
     }
     // agent 关联必须是 {address, space}：address 用于「关联到哪个 agent」，
-    // space 是关联当时它所在的 space，agent 关掉后靠它回退显示。
+    // space 是关联当时它所在的 space，侧栏按它把该事项归到对应 space 组
+    // （agent 活着、搬家、关掉都用这个值，位置不跳）。
     if (it.agent != null) {
       const a = it.agent;
       const ok =
