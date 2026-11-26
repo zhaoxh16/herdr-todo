@@ -135,14 +135,45 @@ sh "$ROOT/scripts/sync-core.sh"
 say "2/5 安装命令行工具到 $BIN_DIR"
 mkdir -p "$BIN_DIR"
 TARGET="$BIN_DIR/herdr-todo"
-# 目标是真实目录时 ln -sfn 会把链接建到目录里面，脚本却打印成功。
+# 目标是真实目录时写入会落到目录里面，脚本却打印成功。
 [ -d "$TARGET" ] && [ ! -L "$TARGET" ] && die "$TARGET 是个目录，请先移开"
 if [ -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
   backup "$TARGET"
 fi
 chmod +x "$ROOT/bin/herdr-todo"
-ln -sfn "$ROOT/bin/herdr-todo" "$TARGET"
-say "    $TARGET -> $ROOT/bin/herdr-todo"
+# 不能把仓库里的 JS 入口直接链接出去：App 的 mod exec 只带
+# /usr/bin:/bin:/usr/sbin:/sbin（见 mod/codebuddy.js），登录 shell 的 node 不在其中，
+# `#!/usr/bin/env node` 会以 exit 127 失败，面板每 10 秒的 pull 于是显示「数据库不可达」。
+# 装出去的是一份 /bin/sh 启动器，把安装时找到的 node 绝对路径写进去；仓库里的
+# bin/herdr-todo 仍是 node 脚本，测试照旧用 node 直接跑它。
+NODE_BIN=$(command -v node) || die "找不到 node（>=18）"
+# 路径里可能有单引号（例如 home 目录名），写进启动器前先按 sh 规则包起来。
+shquote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+LAUNCHER="$TARGET.tmp.$$"
+{
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '# 由 install.sh 生成；重跑安装会覆盖。' \
+    "NODE=$(shquote "$NODE_BIN")" \
+    "ENTRY=$(shquote "$ROOT/bin/herdr-todo")" \
+    'if [ ! -x "$NODE" ]; then' \
+    '  NODE=' \
+    '  for n in "$HOME"/.nvm/versions/node/*/bin/node /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do' \
+    '    if [ -x "$n" ]; then NODE=$n; break; fi' \
+    '  done' \
+    'fi' \
+    'if [ -z "$NODE" ]; then' \
+    '  NODE=$(command -v node || true)' \
+    'fi' \
+    'if [ -z "$NODE" ]; then' \
+    '  echo "herdr-todo: 找不到 node（>=18），请重新运行 install.sh" >&2' \
+    '  exit 127' \
+    'fi' \
+    'exec "$NODE" "$ENTRY" "$@"'
+} > "$LAUNCHER" || die "写启动器 $LAUNCHER 失败"
+chmod +x "$LAUNCHER"
+mv -f "$LAUNCHER" "$TARGET" || die "安装启动器 $TARGET 失败"
+say "    $TARGET -> $NODE_BIN $ROOT/bin/herdr-todo"
 
 say "3/5 安装 mod 到 $APP_HOME/mods"
 # 每个 mod 都先在暂存目录里装完整，再用一次 rename 换上去。
