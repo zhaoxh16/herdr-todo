@@ -1,7 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
-import { spacePath, openInCodeBuddy } from "./codebuddy.js"; // [herdr-todo]
+import { spacePath, openInEditor } from "./codebuddy.js"; // [herdr-todo]
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -161,7 +161,7 @@ export default class Tabs extends View {
 // ======= 以上是 App 自带 tabs mod 的原样克隆（升级时整段替换） =======
 // =====================================================================
 //
-// CodeBuddy 扩展（herdr-todo 维护，非上游代码）
+// 编辑器扩展（herdr-todo 维护，非上游代码）
 //
 // App 自带的 `tabs` 是只读的、每次启动被整份替换，所以这份 mod 是它的克隆件，
 // 只在**末尾**做运行时包装：不改上面的任何一行，避免升级时人工合并越滚越大。
@@ -173,37 +173,46 @@ export default class Tabs extends View {
 // =====================================================================
 
 const upstreamInit = Tabs.prototype.init;
-Tabs.prototype.init = function codebuddyInit(p, cx) {
+Tabs.prototype.init = function editorsInit(p, cx) {
   upstreamInit.call(this, p, cx);
-  // 打开动作在飞时挡住连点，免得一次手抖开出一串窗口。
-  this.opening = false;
+  // 每台编辑器一把锁：打开动作在飞时挡住连点，免得一次手抖开出一串窗口。
+  this.opening = {};
 };
 
+// 一台编辑器的标签栏按钮。按钮常驻：没有目录时置灰、tooltip 说明原因，
+// 位置固定，不会因为 space 切换而忽隐忽现。
+function editorButton(t, { id, name, ready, title, onOpen }) {
+  return h_flex()
+    .id(id)
+    .h(26)
+    .px(8)
+    .gap(5)
+    .flex_none()
+    .items_center()
+    .rounded(6)
+    .text_size(12)
+    .text_color(ready ? t.muted : t.dim)
+    .hover((s) => s.bg(t.hover).text_color(ready ? t.foreground : t.dim))
+    .tooltip(title)
+    .on_mouse_down("left", (_e, cx2) => cx2.stop_propagation())
+    .on_click(() => { if (ready) onOpen(); })
+    .child(name);
+}
+
 const upstreamRender = Tabs.prototype.render;
-Tabs.prototype.render = function codebuddyRender(cx) {
+Tabs.prototype.render = function editorsRender(cx) {
   const body = upstreamRender.call(this, cx);
   const t = theme();
   const space = spaces().find((s) => s.active);
   const path = spacePath(space, panes());
-  // 没有目录时不发请求，但按钮仍然在：位置固定，tooltip 说明为什么点不动。
-  // 判据必须是 `null/undefined`，不能用 `Boolean(path)`：空字符串是 Herdr 的
-  // 「那台机器的 home」，是合法目录（见 codebuddy.js 的 spacePath）。
+  // 没有目录时不发请求，但按钮仍然在。判据必须是 `null/undefined`，不能用
+  // `Boolean(path)`：空字符串是 Herdr 的「那台机器的 home」，是合法目录
+  // （见 codebuddy.js 的 spacePath）。
   const ready = path !== null && path !== undefined;
-  return body.child(
-    h_flex()
-      .id("codebuddy-open")
-      .h(26)
-      .px(8)
-      .gap(5)
-      .flex_none()
-      .items_center()
-      .rounded(6)
-      .text_size(12)
-      .text_color(ready ? t.muted : t.dim)
-      .hover((s) => s.bg(t.hover).text_color(ready ? t.foreground : t.dim))
-      .tooltip(ready ? `${space?.machine ? `${space.machine}:` : ""}${path || "~"}` : "这个 space 还没有可打开的目录")
-      .on_mouse_down("left", (_e, cx2) => cx2.stop_propagation())
-      .on_click(() => { if (ready) openInCodeBuddy(this, { space, path, panes: panes() }); })
-      .child("CodeBuddy"),
-  );
+  const title = ready ? `${space?.machine ? `${space.machine}:` : ""}${path || "~"}` : "这个 space 还没有可打开的目录";
+  const open = (editor) => openInEditor(this, editor, { space, path, panes: panes() });
+  return body
+    .child(editorButton(t, { id: "codebuddy-open", name: "CodeBuddy", ready, title, onOpen: () => open("codebuddy") }))
+    .child(editorButton(t, { id: "cursor-open", name: "Cursor", ready, title, onOpen: () => open("cursor") }));
 };
+

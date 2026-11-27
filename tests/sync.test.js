@@ -101,9 +101,9 @@ test("拖拽契约副本与源文件一致", async () => {
   }
 });
 
-// 「用 CodeBuddy 打开」：标签栏按钮与 space 右键菜单各一份副本。分叉时会出现
+// 「用编辑器打开」：标签栏按钮与 space 右键菜单各一份副本。分叉时会出现
 // 「按钮开对目录、菜单开错目录」，两边单独看都正常，只有并排比才能发现。
-test("CodeBuddy 打开模块与源文件一致", async () => {
+test("编辑器打开模块与源文件一致", async () => {
   const src = await fs.readFile(path.join(ROOT, "mod", "codebuddy.js"), "utf8");
   for (const dir of ["tabs", "menu"]) {
     const copy = await fs.readFile(path.join(ROOT, "mod", dir, "codebuddy.js"), "utf8");
@@ -174,7 +174,7 @@ test("克隆件的非上游改动都带 [herdr-todo] 标记", async () => {
     const boundary = lines.findIndex((l) => /以上是 App 自带/.test(l));
     assert.ok(boundary > 0, `mod/${dir}/main.js 应有「以上是 App 自带 … 的原样克隆」分界注释`);
     const unmarked = lines.slice(0, boundary).filter((line) => {
-      if (!/codebuddy/i.test(line)) return false;
+      if (!/codebuddy|cursor|openInEditor/i.test(line)) return false;
       if (/^\s*(\*|\/\/)/.test(line)) return false; // 注释不算改动
       return !line.includes("[herdr-todo]");
     });
@@ -182,17 +182,22 @@ test("克隆件的非上游改动都带 [herdr-todo] 标记", async () => {
   }
 
   // 标记本身也可能被「只删了那一行、标记留在别处」骗过，所以直接钉住三件事：
-  // menu 的菜单项与图标分支在、choose() 真的把它分发出去（否则走 run("codebuddy")
-  // 这个不存在的命令，表现为点了没反应）；tabs 的按钮真的绑上了打开动作。
+  // menu 的两条菜单项与图标分支在、choose() 真的把它们分发出去（否则走
+  // run("codebuddy") / run("cursor") 这两个不存在的命令，表现为点了没反应）；
+  // tabs 的按钮真的绑上了打开动作。
   const menu = await fs.readFile(path.join(ROOT, "mod", "menu", "main.js"), "utf8");
   assert.match(menu, /\["用 CodeBuddy 打开",\s*"codebuddy"/, "menu 的 space 分支应有一条 CodeBuddy 菜单项");
+  assert.match(menu, /\["用 Cursor 打开",\s*"cursor"/, "menu 的 space 分支应有一条 Cursor 菜单项");
   assert.match(menu, /command === "codebuddy"\s*\?\s*"[a-z-]+"/, "menuIcon 应知道 codebuddy 用什么图标");
-  assert.match(menu, /it\[1\] === "codebuddy"[\s\S]{0,120}openInCodeBuddy\(/, "choose() 应把 codebuddy 分发给 openInCodeBuddy");
+  assert.match(menu, /command === "cursor"\s*\?\s*"[a-z-]+"/, "menuIcon 应知道 cursor 用什么图标");
+  assert.match(menu, /openInEditor\(this, it\[1\]/, "choose() 应把编辑器菜单项分发给 openInEditor");
 
   const tabs = await fs.readFile(path.join(ROOT, "mod", "tabs", "main.js"), "utf8");
-  assert.match(tabs, /openInCodeBuddy\(this,/, "tabs 的按钮应调用 openInCodeBuddy");
+  assert.match(tabs, /openInEditor\(this, editor,/, "tabs 的按钮应调用 openInEditor");
+  assert.match(tabs, /id: "codebuddy-open"/, "tabs 应渲染 CodeBuddy 按钮");
+  assert.match(tabs, /id: "cursor-open"/, "tabs 应渲染 Cursor 按钮");
   // 按钮的可用判据不能用 Boolean(path)：空 folder 是「那台机器的 home」，是合法目录。
-  // 写成 Boolean 时这类 space 的按钮会永远置灰，而 openInCodeBuddy 自己反而会打开 home。
+  // 写成 Boolean 时这类 space 的按钮会永远置灰，而 openInEditor 自己反而会打开 home。
   assert.match(
     tabs,
     /const ready = path !== null && path !== undefined/,

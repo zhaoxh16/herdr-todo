@@ -150,7 +150,7 @@ test("spaces-todo：menu-todo 装着时，右键菜单用它", async () => {
   const { mod, s } = await loadMod("spaces");
   s.files = {
     "/tmp/herdr-app/mods/menu-todo/main.js": "export default class Menu extends View {}",
-    "/tmp/herdr-app/mods/menu-todo/codebuddy.js": "export async function openInCodeBuddy() {}",
+    "/tmp/herdr-app/mods/menu-todo/codebuddy.js": "export async function openInEditor() {}",
   };
   const inst = spacesView(mod);
   await settle();
@@ -396,12 +396,13 @@ test("spaces-todo：多 space 事项从 spA 拖到 spB 仍正常 move --from", a
   assert.equal(s.execs.length, 0, "放回 spA 才算取消");
 });
 
-// ---------------- menu-todo：CodeBuddy 菜单项与点击行为 ----------------
+// ---------------- menu-todo：编辑器菜单项与点击行为 ----------------
 
 // 菜单项顺序由 items() 决定，不在测试里硬编码下标：逐个点下去，用「exec 的参数」认出
-// CodeBuddy 那一次。注意不能拿「有没有 exec」当判据——init 时 checkout() 会跑 git。
-// 返回该次 exec 的 args，没有则 null。
-async function clickUntilOpens(inst, s, want) {
+// 编辑器那一次。注意不能拿「有没有 exec」当判据——init 时 checkout() 会跑 git。
+// 本机两个编辑器菜单项的参数完全相同（都是目录），所以可选地再用 `cmd` 限定是哪台
+// 编辑器的 CLI。返回该次 exec 的 [cmd, args]，没有则 null。
+async function clickUntilOpens(inst, s, want, cmd) {
   for (let i = 0; i < 10; i++) {
     s.execs.length = 0;
     s.runs.length = 0;
@@ -411,12 +412,12 @@ async function clickUntilOpens(inst, s, want) {
       assert.fail(`点第 ${i} 项时抛错：${e.message}——菜单项分发坏了`);
     }
     await settle();
-    const hit = s.execs.find(([, args]) => JSON.stringify(args) === JSON.stringify(want));
+    const hit = s.execs.find(([c, args]) => JSON.stringify(args) === JSON.stringify(want) && (!cmd || cmd.test(c)));
     if (hit) {
       assert.deepEqual(
-        s.runs.filter(([name]) => name === "codebuddy"),
+        s.runs.filter(([name]) => name === "codebuddy" || name === "cursor"),
         [],
-        '不许落到 run("codebuddy")——宿主没这个命令，表现为点了没反应',
+        '不许落到 run("codebuddy") / run("cursor")——宿主没有这两个命令，表现为点了没反应',
       );
       return hit;
     }
@@ -433,12 +434,12 @@ test("menu-todo：点「用 CodeBuddy 打开」用该 space 第一个终端的 c
   const inst = instance(mod);
   inst.init({}, fakeCx());
 
-  const hit = await clickUntilOpens(inst, s, ["/repo/sub"]);
+  const hit = await clickUntilOpens(inst, s, ["/repo/sub"], /CodeBuddy CN\.app\/Contents\/Resources\/app\/bin\/code$/);
   assert.ok(hit, "space 菜单里应有一项用 /repo/sub 打开（CodeBuddy）");
   assert.equal(s.execs.length, 1, "点一次只该发一次 exec");
 });
 
-test("menu-todo：远程 space 传的是 remote-ssh 的 folder-uri", async () => {
+test("menu-todo：远程 space 传的是 CodeBuddy remote-ssh 的 folder-uri", async () => {
   const { mod, s } = await loadMod("menu");
   s.props = { tab: "space", target: { id: "s2" }, overlay: "o9" };
   s.spaces = [{ id: "s2", machine: "dev8", folder: "/data/ws", tabs: [] }];
@@ -452,15 +453,48 @@ test("menu-todo：远程 space 传的是 remote-ssh 的 folder-uri", async () =>
   assert.ok(hit, "远程 space 菜单里应有一项用 remote-ssh 的 folder-uri 打开");
 });
 
+// 「用 Cursor 打开」是独立的一条，不是 CodeBuddy 那一项的别名：它必须发 Cursor 自己的
+// CLI 与 authority。点下去能命中 cursor 的 argv，就同时证明「菜单项在」「分发对了」
+// 「没落到 run("cursor")」三件事。
+test("menu-todo：点「用 Cursor 打开」用 Cursor 打开该 space 的目录", async () => {
+  const { mod, s } = await loadMod("menu");
+  s.props = { tab: "space", target: { id: "sp1" }, overlay: "o9" };
+  s.spaces = [{ id: "sp1", machine: null, folder: "/repo", tabs: [{ id: "tb" }] }];
+  s.panes = [{ tab: "tb", cwd: "/repo/sub" }];
+
+  const inst = instance(mod);
+  inst.init({}, fakeCx());
+
+  const hit = await clickUntilOpens(inst, s, ["/repo/sub"], /Cursor\.app\/Contents\/Resources\/app\/bin\/cursor$/);
+  assert.ok(hit, "space 菜单里应有一项用 /repo/sub 打开（Cursor）");
+  assert.match(hit[0], /Cursor\.app\/Contents\/Resources\/app\/bin\/cursor$/);
+});
+
+test("menu-todo：远程 space 的 Cursor 菜单项用 ssh-remote 的 folder-uri", async () => {
+  const { mod, s } = await loadMod("menu");
+  s.props = { tab: "space", target: { id: "s3" }, overlay: "o9" };
+  s.spaces = [{ id: "s3", machine: "dev6", folder: "/data/ws", tabs: [] }];
+  s.panes = [];
+
+  const inst = instance(mod);
+  inst.init({}, fakeCx());
+
+  const want = ["--folder-uri", "vscode-remote://ssh-remote+dev6/data/ws"];
+  const hit = await clickUntilOpens(inst, s, want);
+  assert.ok(hit, "远程 space 菜单里应有一项用 Cursor 的 ssh-remote folder-uri 打开");
+  assert.match(hit[0], /Cursor\.app\/Contents\/Resources\/app\/bin\/cursor$/);
+});
+
 // ---------------- tabs-todo：按钮可用判据 ----------------
 //
 // 按钮是否可用决定两件事：颜色（t.muted 亮 / t.dim 灰）与 tooltip 文本。假元素吞掉了
 // 样式，所以这里让替身把「收到的方法调用与参数」记下来——这是可观察投影，不是实现细节：
 // 我们断言的就是用户能看到的那个区别（置灰 + 「还没有可打开的目录」）。
 
-test("tabs-todo：空 folder（那台机器的 home）时按钮显示为可用", async () => {
+test("tabs-todo：两台编辑器的按钮都在，空 folder（那台机器的 home）时显示为可用", async () => {
   const { labels } = await renderTabs({ folder: "" });
-  assert.ok(labels.includes("CodeBuddy"), "按钮应当存在");
+  assert.ok(labels.includes("CodeBuddy"), "CodeBuddy 按钮应当存在");
+  assert.ok(labels.includes("Cursor"), "Cursor 按钮应当存在");
   assert.equal(
     labels.includes("这个 space 还没有可打开的目录"),
     false,
@@ -468,9 +502,38 @@ test("tabs-todo：空 folder（那台机器的 home）时按钮显示为可用",
   );
 });
 
-test("tabs-todo：真的没有目录时按钮置灰并说明原因", async () => {
+test("tabs-todo：真的没有目录时两个按钮都置灰并说明原因", async () => {
   const { labels } = await renderTabs({ folder: null, noFolder: true });
   assert.ok(labels.includes("这个 space 还没有可打开的目录"), "没有目录时 tooltip 要说明原因，而不是静默不动作");
+  assert.ok(labels.includes("CodeBuddy") && labels.includes("Cursor"), "置灰时两个按钮也都要在");
+});
+
+// 按钮「绑上了对的编辑器」只有在按下时才能看见：两个按钮共用同一个渲染函数，
+// 参数接错（例如两个都开 CodeBuddy）时文字与 tooltip 都正确，只有 exec 的 CLI 不同。
+// 所以这里真的按下按钮，断言发出的命令是那台编辑器自己的。
+test("tabs-todo：两个按钮各自用对应编辑器的 CLI 打开", async () => {
+  for (const [id, want] of [
+    ["codebuddy-open", /CodeBuddy CN\.app\/Contents\/Resources\/app\/bin\/code$/],
+    ["cursor-open", /Cursor\.app\/Contents\/Resources\/app\/bin\/cursor$/],
+  ]) {
+    const { mod, s } = await loadMod("tabs", { gpk: RECORD_KIT, base: RECORD_BASE });
+    s.spaces = [{ id: "s1", active: true, machine: null, folder: "/repo", tabs: [{ id: "tb", name: "1", active: true }] }];
+    s.panes = [];
+    globalThis.__clicks = [];
+    globalThis.__cur = null;
+    const Cls = mod.default;
+    const inst = Object.create(Cls.prototype);
+    try { Cls.prototype.init.call(inst, {}, fakeCx()); } catch {}
+    Cls.prototype.render.call(inst, fakeCx());
+
+    const hit = globalThis.__clicks.find(([k, , el]) => k === "on_click" && el === id);
+    assert.ok(hit, `${id} 上应有点击回调`);
+    hit[1]();
+    await settle();
+    const exec = s.execs.find(([cmd]) => want.test(cmd));
+    assert.ok(exec, `${id} 应调用 ${want}，实际记录：${JSON.stringify(s.execs.map(([c]) => c))}`);
+    assert.deepEqual(exec[1], ["/repo"], "用该 space 的目录打开");
+  }
 });
 
 // 渲染一次标签栏，收集替身收到的所有字符串（tooltip 与按钮文字都在里面）。

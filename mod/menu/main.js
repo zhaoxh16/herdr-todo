@@ -6,7 +6,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec } from "herdr";
-import { spacePath, openInCodeBuddy } from "./codebuddy.js"; // [herdr-todo]
+import { spacePath, openInEditor } from "./codebuddy.js"; // [herdr-todo]
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s) {
@@ -65,6 +65,7 @@ function items(p, git) {
       return [
         ["Rename", "space.rename", { id: tg.id }],
         ["用 CodeBuddy 打开", "codebuddy", { space: tg.id }], // [herdr-todo]
+        ["用 Cursor 打开", "cursor", { space: tg.id }], // [herdr-todo]
         ...(git ? [["New worktree", "worktree", { space: tg.id, action: "new" }], ["Open worktree", "worktree", { space: tg.id, action: "open" }]] : []),
         ...(git === "linked" ? [["Remove worktree", "worktree", { space: tg.id, action: "remove" }]] : []),
         ["Close", "space.close", { id: tg.id }],
@@ -82,7 +83,7 @@ function items(p, git) {
 }
 
 function menuIcon(command) {
-  const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "codebuddy" ? "file-text" /* [herdr-todo] */ : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
+  const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "codebuddy" ? "file-text" /* [herdr-todo] */ : command === "cursor" ? "monitor" /* [herdr-todo] */ : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
 
@@ -113,11 +114,12 @@ export default class Menu extends View {
   choose(i, cx) {
     const it = items(props(), this.git)[i];
     if (!it) return;
-    // [herdr-todo] CodeBuddy 要读这个 space 的目录，而 closeOverlay 之后 props 没了，先取出来。
-    const target = it[1] === "codebuddy" ? spaces().find((s) => s.id === it[2].space) : null; // [herdr-todo]
+    // [herdr-todo] 编辑器要读这个 space 的目录，而 closeOverlay 之后 props 没了，先取出来。
+    const opening = it[1] === "codebuddy" || it[1] === "cursor"; // [herdr-todo]
+    const target = opening ? spaces().find((s) => s.id === it[2].space) : null; // [herdr-todo]
     closeOverlay(props()?.overlay);
     if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
-    else if (it[1] === "codebuddy") openInCodeBuddy(this, { space: target, path: spacePath(target, panes()), panes: panes() }); // [herdr-todo]
+    else if (opening) openInEditor(this, it[1], { space: target, path: spacePath(target, panes()), panes: panes() }); // [herdr-todo]
     else run(it[1], it[2]);
   }
 
@@ -168,9 +170,9 @@ export default class Menu extends View {
 // [herdr-todo] 以上是 App 自带 menu mod 的原样克隆（升级时整段替换），
 // 本文件里所有非上游改动都带 `[herdr-todo]` 标记，重新克隆后逐个搜回来即可：
 //   1. 第 9 行的 import；
-//   2. items() 里 space 分支的那条「用 CodeBuddy 打开」；
-//   3. menuIcon() 里 command === "codebuddy" 的图标分支；
-//   4. choose() 里 closeOverlay 之前取 target，以及 codebuddy 的异步分发。
-// 未加这条菜单项时，choose() 会走 `run("codebuddy", …)`——一个不存在的命令，
-// 表现为「点了没反应」，而 npm test 与 herdr-app check 都不会报错。
+//   2. items() 里 space 分支的两条（「用 CodeBuddy 打开」「用 Cursor 打开」）；
+//   3. menuIcon() 里 command === "codebuddy" 与 command === "cursor" 的图标分支；
+//   4. choose() 里 closeOverlay 之前取 target，以及编辑器的异步分发。
+// 未加条目时，choose() 会走 `run("codebuddy")` / `run("cursor")`——宿主没有这两个
+// 命令，表现为「点了没反应」，而 npm test 与 herdr-app check 都不会报错。
 // =====================================================================

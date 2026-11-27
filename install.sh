@@ -52,7 +52,7 @@ MOD_MANIFEST='
 herdr-todo|.|main.js store.js core.js mod.json todo.svg|详情窗与快速记录窗
 spaces-todo|spaces|main.js mod.json store.js core.js todo-view.js todo-drag.js jsconfig.json|左侧侧栏里的待办行
 agents-todo|agents|main.js mod.json store.js core.js todo-view.js todo-drag.js jsconfig.json|Agents 栏里每个 agent 的待办行
-tabs-todo|tabs|main.js mod.json codebuddy.js jsconfig.json|标签栏里的 CodeBuddy 按钮
+tabs-todo|tabs|main.js mod.json codebuddy.js jsconfig.json|标签栏里的编辑器按钮
 menu-todo|menu|main.js mod.json codebuddy.js jsconfig.json|space 右键菜单
 '
 
@@ -224,7 +224,7 @@ unset -f install_mod
 rm -rf "$STAGE"
 
 # 历史上（v0.1 的 tabs-todo）标签栏克隆件曾被移除，改回自带 tabs。
-# 现在 tabs-todo 又回来了，但含义完全不同：它只多一个 CodeBuddy 按钮，
+# 现在 tabs-todo 又回来了，但含义完全不同：它只多两个编辑器按钮，
 # 布局也明确指向它。所以**不能**再自动移除它——那会把刚装好的 mod 删掉，
 # 布局就指向一个不存在的 mod。旧版本留下的 `tabs-todo.bak-<戳>` 备份仍按
 # 「mods/ 里不留备份」的规矩挪到 backups/（见下面的循环）。
@@ -266,7 +266,7 @@ say "下一步："
 say "  herdr-app check $APP_HOME/mods/$MOD_NAME      # 校验详情窗能加载"
 say "  herdr-app check $APP_HOME/mods/spaces-todo    # 校验侧栏待办能加载"
 say "  herdr-app check $APP_HOME/mods/agents-todo    # 校验 Agents 栏待办能加载"
-say "  herdr-app check $APP_HOME/mods/tabs-todo      # 校验标签栏 CodeBuddy 按钮能加载"
+say "  herdr-app check $APP_HOME/mods/tabs-todo      # 校验标签栏编辑器按钮能加载"
 say "  herdr-app check $APP_HOME/mods/menu-todo      # 校验 space 右键菜单能加载"
 say "  herdr-app do layout.switch --name herdr-todo   # 切到带待办面板的布局"
 say ""

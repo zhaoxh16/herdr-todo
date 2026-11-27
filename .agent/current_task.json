@@ -1,7 +1,7 @@
 {
-  "task": "todo-cloud-mysql",
-  "task_dir": ".agent/todo-cloud-mysql",
-  "plan_path": ".agent/todo-cloud-mysql/plan.md",
+  "task": "cursor-open",
+  "task_dir": ".agent/cursor-open",
+  "plan_path": ".agent/cursor-open/plan.md",
   "updated_by": "execute-plan",
-  "updated_at": "2026-11-23T16:56:00+08:00"
+  "updated_at": "2026-11-27T15:58:56+08:00"
 }
